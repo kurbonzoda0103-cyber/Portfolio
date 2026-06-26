@@ -17,6 +17,7 @@ interface VideoAnalysis {
   tags: string[];
   transcript?: string;
   topComments: { text: string; likeCount: number }[];
+  retentionPoints?: { time: string; retention: number }[];
 }
 
 function fmt(n: number): string {

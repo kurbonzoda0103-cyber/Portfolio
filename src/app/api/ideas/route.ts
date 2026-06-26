@@ -27,7 +27,7 @@ export async function POST(req: NextRequest) {
       "title": "конкретный заголовок (до 60 символов)",
       "hook": "первые 30 секунд — что говоришь чтобы зацепить зрителя",
       "outline": ["пункт 1", "пункт 2", "пункт 3", "пункт 4"],
-      "tags": ["теб1", "теб2", "теб3", "теб4", "теб5"],
+      "tags": ["тег1", "тег2", "тег3", "тег4", "тег5"],
       "difficulty": "easy|medium|hard",
       "estimatedViews": "1K-10K",
       "whyItWorks": "1-2 предложения почему это видео выстрелит"
@@ -49,6 +49,7 @@ export async function POST(req: NextRequest) {
     });
 
     const text = message.content[0].type === "text" ? message.content[0].text : "";
+
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error("Не удалось получить идеи от Claude");
 

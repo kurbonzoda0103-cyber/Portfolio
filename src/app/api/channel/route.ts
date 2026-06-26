@@ -9,7 +9,9 @@ function extractChannelId(url: string): { type: "id" | "handle" | "username"; va
     if (path.startsWith("/@")) return { type: "handle", value: path.slice(2) };
     if (path.startsWith("/channel/")) return { type: "id", value: path.split("/channel/")[1].split("/")[0] };
     if (path.startsWith("/user/")) return { type: "username", value: path.split("/user/")[1].split("/")[0] };
-  } catch { /* bare value */ }
+  } catch {
+    // bare value
+  }
   if (url.startsWith("@")) return { type: "handle", value: url.slice(1) };
   if (url.startsWith("UC")) return { type: "id", value: url };
   return { type: "handle", value: url };

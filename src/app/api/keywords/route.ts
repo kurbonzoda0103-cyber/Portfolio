@@ -26,7 +26,9 @@ export async function GET(req: NextRequest) {
       } catch { /* ignore */ }
     }
 
+    const resultCount = searchData.items?.length || 0;
     const totalResults = searchData.pageInfo?.totalResults || 0;
+
     const competition: "low" | "medium" | "high" =
       totalResults > 5_000_000 ? "high" : totalResults > 500_000 ? "medium" : "low";
 
@@ -49,7 +51,7 @@ export async function GET(req: NextRequest) {
       })),
     ];
 
-    return NextResponse.json({ keywords });
+    return NextResponse.json({ keywords, resultCount });
   } catch (err: unknown) {
     return NextResponse.json({ error: err instanceof Error ? err.message : "Error" }, { status: 500 });
   }

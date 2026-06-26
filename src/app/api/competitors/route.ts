@@ -86,9 +86,15 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({
       anchor: {
-        id: anchorCh.id, title: anchorCh.snippet.title,
-        subscribers: anchorSubs, views: anchorViews,
-        monthlyRevenue: 0, uploadsPerMonth: 0, avgViewsPerVideo: 0, engagementRate: 0, isFaceless: false,
+        id: anchorCh.id,
+        title: anchorCh.snippet.title,
+        subscribers: anchorSubs,
+        views: anchorViews,
+        monthlyRevenue: 0,
+        uploadsPerMonth: 0,
+        avgViewsPerVideo: 0,
+        engagementRate: 0,
+        isFaceless: false,
       },
       competitors,
     });

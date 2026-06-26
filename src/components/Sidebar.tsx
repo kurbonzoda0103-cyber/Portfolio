@@ -59,7 +59,7 @@ export default function Sidebar() {
 
       <div className="p-4 m-3 rounded-xl bg-gradient-to-br from-red-900/30 to-orange-900/20 border border-red-500/20">
         <p className="text-xs font-semibold text-white/80 mb-1">Powered by</p>
-        <p className="text-xs text-white/40">YouTube API · Claude AI</p>
+        <p className="text-xs text-white/40">NexLev · vidIQ Analytics</p>
       </div>
     </aside>
   );
