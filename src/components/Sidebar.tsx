@@ -10,6 +10,7 @@ import {
   Compass,
   Target,
   Play,
+  Sparkles,
 } from "lucide-react";
 import { clsx } from "clsx";
 
@@ -20,6 +21,7 @@ const nav = [
   { href: "/channels", label: "Каналы", icon: BarChart2 },
   { href: "/videos", label: "Видео", icon: Video },
   { href: "/keywords", label: "Ключевые слова", icon: Compass },
+  { href: "/ideas", label: "Генератор идей ✨", icon: Sparkles },
 ];
 
 export default function Sidebar() {
@@ -57,7 +59,7 @@ export default function Sidebar() {
 
       <div className="p-4 m-3 rounded-xl bg-gradient-to-br from-red-900/30 to-orange-900/20 border border-red-500/20">
         <p className="text-xs font-semibold text-white/80 mb-1">Powered by</p>
-        <p className="text-xs text-white/40">NexLev · vidIQ Analytics</p>
+        <p className="text-xs text-white/40">YouTube API · Claude AI</p>
       </div>
     </aside>
   );
