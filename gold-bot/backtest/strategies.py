@@ -211,3 +211,98 @@ def vwap_cross(day_bars: pd.DataFrame) -> Signal | None:
         prev_side = side
 
     return None  # пересечения после разогрева не было
+
+
+# --- Momentum Breakout + фильтр объёма ---
+# Идея: тот же пробой диапазона, что и в ORB, но входим только если пробойный
+# бар показал всплеск объёма (tick_volume) относительно объёма во время
+# формирования диапазона - отсекаем "тихие" ложные пробои без реального интереса
+# участников рынка (231 из 1207 сделок ORB без фильтра ушли в стоп - гипотеза:
+# часть из них были как раз пробоями без объёма).
+VOLUME_ORB_MINUTES = 30
+VOLUME_ORB_STOP_BUFFER_USD = 0.0
+VOLUME_ORB_RR = 1.5
+VOLUME_MULTIPLIER = 1.5  # объём пробойного бара должен быть в VOLUME_MULTIPLIER раз выше среднего в диапазоне
+
+
+def volume_confirmed_breakout(day_bars: pd.DataFrame) -> Signal | None:
+    """day_bars - M15 свечи одного дня внутри торгового окна, отсортированы по времени."""
+
+    bar_minutes = 15  # ожидаем M15
+    range_bar_count = max(1, VOLUME_ORB_MINUTES // bar_minutes)
+
+    if len(day_bars) <= range_bar_count:
+        return None
+
+    range_bars = day_bars.iloc[:range_bar_count]
+    range_high = range_bars["high"].max()
+    range_low = range_bars["low"].min()
+    if range_high <= range_low:
+        return None
+
+    avg_range_volume = range_bars["tick_volume"].mean()
+    if avg_range_volume <= 0:
+        return None
+    volume_threshold = avg_range_volume * VOLUME_MULTIPLIER
+
+    for _, bar in day_bars.iloc[range_bar_count:].iterrows():
+        if bar["tick_volume"] < volume_threshold:
+            continue  # пробой без объёма - ждём следующий бар, этот не в счёт
+
+        if bar["close"] > range_high:
+            stop = range_low - VOLUME_ORB_STOP_BUFFER_USD
+            entry = bar["close"]
+            risk = entry - stop
+            return Signal("long", entry, stop, entry + risk * VOLUME_ORB_RR, bar["time_local"])
+        if bar["close"] < range_low:
+            stop = range_high + VOLUME_ORB_STOP_BUFFER_USD
+            entry = bar["close"]
+            risk = stop - entry
+            return Signal("short", entry, stop, entry - risk * VOLUME_ORB_RR, bar["time_local"])
+
+    return None  # пробоя с достаточным объёмом не было
+
+
+# --- Momentum Continuation (N баров подряд в одну сторону) ---
+# Идея: не входить на первом же импульсе (как в ORB), а дождаться ПОДТВЕРЖДЕНИЯ -
+# MOMENTUM_CONSECUTIVE_BARS баров подряд закрылись в одну сторону (устойчивый
+# моментум), и только потом входить по направлению, а не на первом рывке.
+MOMENTUM_CONSECUTIVE_BARS = 3
+MOMENTUM_STOP_BUFFER_USD = 0.0
+MOMENTUM_RR = 1.5
+
+
+def momentum_continuation(day_bars: pd.DataFrame) -> Signal | None:
+    """day_bars - M15 свечи одного дня внутри торгового окна, отсортированы по времени."""
+
+    day_bars = day_bars.reset_index(drop=True)
+    n = MOMENTUM_CONSECUTIVE_BARS
+
+    if len(day_bars) <= n:
+        return None
+
+    for i in range(n, len(day_bars)):
+        window = day_bars.iloc[i - n:i]
+        bullish = (window["close"] > window["open"]).all()
+        bearish = (window["close"] < window["open"]).all()
+
+        if not bullish and not bearish:
+            continue
+
+        entry_bar = day_bars.iloc[i - 1]
+        entry = entry_bar["close"]
+
+        if bullish:
+            stop = window["low"].min() - MOMENTUM_STOP_BUFFER_USD
+            if stop >= entry:
+                continue
+            risk = entry - stop
+            return Signal("long", entry, stop, entry + risk * MOMENTUM_RR, entry_bar["time_local"])
+        else:
+            stop = window["high"].max() + MOMENTUM_STOP_BUFFER_USD
+            if stop <= entry:
+                continue
+            risk = stop - entry
+            return Signal("short", entry, stop, entry - risk * MOMENTUM_RR, entry_bar["time_local"])
+
+    return None  # подтверждённого моментума за окно не случилось
