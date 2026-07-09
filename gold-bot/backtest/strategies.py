@@ -311,8 +311,11 @@ MOMENTUM_STOP_BUFFER_USD = 0.0
 MOMENTUM_RR = 1.5
 
 
-def momentum_continuation(day_bars: pd.DataFrame) -> Signal | None:
-    """day_bars - M15 свечи одного дня внутри торгового окна, отсортированы по времени."""
+def momentum_continuation(day_bars: pd.DataFrame, rr: float = MOMENTUM_RR) -> Signal | None:
+    """day_bars - M15 свечи одного дня внутри торгового окна, отсортированы по времени.
+
+    rr - множитель тейк-профита к риску, параметризован, чтобы сравнивать разные
+    цели (например, 1.5R по умолчанию против 1R) без копирования функции."""
 
     day_bars = day_bars.reset_index(drop=True)
     n = MOMENTUM_CONSECUTIVE_BARS
@@ -336,13 +339,13 @@ def momentum_continuation(day_bars: pd.DataFrame) -> Signal | None:
             if stop >= entry:
                 continue
             risk = entry - stop
-            return Signal("long", entry, stop, entry + risk * MOMENTUM_RR, entry_bar["time_local"])
+            return Signal("long", entry, stop, entry + risk * rr, entry_bar["time_local"])
         else:
             stop = window["high"].max() + MOMENTUM_STOP_BUFFER_USD
             if stop <= entry:
                 continue
             risk = stop - entry
-            return Signal("short", entry, stop, entry - risk * MOMENTUM_RR, entry_bar["time_local"])
+            return Signal("short", entry, stop, entry - risk * rr, entry_bar["time_local"])
 
     return None  # подтверждённого моментума за окно не случилось
 
