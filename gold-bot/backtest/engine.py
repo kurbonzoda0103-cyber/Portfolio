@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pandas as pd
 
 import config
-from backtest.strategies import opening_range_breakout, Signal
+from backtest.strategies import Signal
 
 POINT = 0.01  # шаг цены золота у этого брокера (см. bot/check_connection.py)
 
@@ -143,8 +143,14 @@ def simulate_trade(signal: Signal, day_bars: pd.DataFrame, equity: float, effect
     )
 
 
-def run_backtest(df: pd.DataFrame, starting_equity: float):
-    """Возвращает (список Trade, DataFrame кривой капитала)."""
+def run_backtest(df: pd.DataFrame, starting_equity: float, signal_fn):
+    """Возвращает (список Trade, DataFrame кривой капитала).
+
+    signal_fn(day_bars, date) -> Signal | None - генерирует сигнал входа для
+    конкретного торгового дня. Движок не привязан к конкретной стратегии -
+    ORB, фильтр по тренду и т.д. передаются как обычная функция, чтобы не
+    плодить копию всего движка под каждую новую идею.
+    """
 
     trades: list[Trade] = []
     equity = starting_equity
@@ -168,9 +174,9 @@ def run_backtest(df: pd.DataFrame, starting_equity: float):
             continue
 
         # Лимиты MAX_LOSING_TRADES_PER_DAY / MAX_DAILY_LOSS_PCT сейчас не могут
-        # сработать - стратегия даёт максимум 1 сделку в день. Оставлены здесь
-        # как каркас для будущих стратегий с несколькими входами за окно.
-        signal = opening_range_breakout(day_bars)
+        # сработать - все текущие стратегии дают максимум 1 сделку в день.
+        # Оставлены здесь как каркас для будущих стратегий с несколькими входами.
+        signal = signal_fn(day_bars, date)
         if signal is None:
             continue
 

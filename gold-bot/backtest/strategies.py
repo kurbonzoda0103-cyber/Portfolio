@@ -61,3 +61,40 @@ def opening_range_breakout(day_bars: pd.DataFrame) -> Signal | None:
             return Signal("short", entry, stop, entry - risk * ORB_RR, bar["time_local"])
 
     return None  # диапазон ни разу не был пробит за окно - сигнала нет
+
+
+# --- ORB + фильтр по тренду H1 ---
+# ORB без фильтра (см. run_backtest.py) дал сырой P&L в минусе ещё до спреда -
+# то есть у самого пробоя нет edge, и часть сделок открывались против старшего
+# тренда. Проверяем гипотезу: пробой диапазона принимаем ТОЛЬКО по направлению
+# тренда H1 (простой фильтр: цена закрытия последнего закрытого H1-бара выше/ниже
+# его EMA). Контр-трендовые сигналы просто пропускаем (не переворачиваем и не
+# входим против тренда).
+H1_TREND_EMA_SPAN = 20  # число H1-баров для EMA-фильтра тренда - первая гипотеза, не подобранная под результат
+
+
+def compute_h1_trend_series(h1_df: pd.DataFrame) -> pd.DataFrame:
+    """Готовит H1-данные для определения тренда: EMA и время, когда бар считается
+    ПОДТВЕРЖДЁННЫМ (закрытым). H1-бар с меткой time_local покрывает интервал
+    [time_local, time_local+1ч) - использовать его для решений можно только после
+    time_local+1ч, иначе это заглядывание в будущее (lookahead bias)."""
+
+    h1_df = h1_df.sort_values("time_local").copy()
+    h1_df["ema"] = h1_df["close"].ewm(span=H1_TREND_EMA_SPAN, adjust=False).mean()
+    h1_df["confirmed_time"] = h1_df["time_local"] + pd.Timedelta(hours=1)
+    return h1_df[["confirmed_time", "close", "ema"]]
+
+
+def trend_filtered_orb(day_bars: pd.DataFrame, h1_trend: str | None) -> Signal | None:
+    """Как opening_range_breakout, но сигнал принимается только если его
+    направление совпадает с h1_trend ("long"/"short"). h1_trend=None - тренд
+    не определён (например, начало истории, EMA ещё не набрала данных) -
+    сделок в этот день не берём."""
+
+    if h1_trend is None:
+        return None
+
+    signal = opening_range_breakout(day_bars)
+    if signal is None or signal.direction != h1_trend:
+        return None
+    return signal
