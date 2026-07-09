@@ -43,6 +43,8 @@ def print_report(trades, equity_df: pd.DataFrame, starting_equity: float):
         return
 
     pnl = pd.Series([t.pnl_usd for t in trades])
+    gross_pnl = pd.Series([t.gross_pnl_usd for t in trades])
+    cost = pd.Series([t.cost_usd for t in trades])
     wins = pnl[pnl > 0]
     losses = pnl[pnl < 0]
 
@@ -63,6 +65,18 @@ def print_report(trades, equity_df: pd.DataFrame, starting_equity: float):
     pf_str = f"{profit_factor:.2f}" if profit_factor != float("inf") else "inf (убыточных сделок не было)"
     print(f"Profit factor:       {pf_str}")
     print(f"Средний P&L сделки:  ${pnl.mean():.2f}")
+
+    print()
+    print("Разбивка на сырой сигнал и costs (чтобы понять, ЧТО убивает результат):")
+    print(f"  P&L ДО спреда/комиссии (сырой сигнал): ${gross_pnl.sum():+.2f}")
+    print(f"  Спред + комиссия за весь период:       ${-cost.sum():+.2f}")
+    print(f"  P&L ПОСЛЕ costов (итог выше):           ${pnl.sum():+.2f}")
+    if gross_pnl.sum() > 0:
+        print("  -> Сырой сигнал в плюсе - costы съедают прибыль. Стоит смотреть в сторону")
+        print("     меньшего числа/более качественных сделок, а не выбрасывать идею пробоя.")
+    else:
+        print("  -> Сырой сигнал УЖЕ в минусе, до всяких costов. Дело не в спреде -")
+        print("     у самого пробоя диапазона нет edge на этом инструменте/окне в таком виде.")
     print(f"Макс. просадка:      {max_drawdown_pct:.1f}%")
 
     by_reason = pd.Series([t.exit_reason for t in trades]).value_counts()

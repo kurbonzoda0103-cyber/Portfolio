@@ -35,7 +35,9 @@ class Trade:
     stop_price: float
     take_profit_price: float
     lot: float
-    pnl_usd: float
+    gross_pnl_usd: float   # P&L без учёта спреда/комиссии - чтобы видеть, есть ли вообще сырой edge
+    cost_usd: float        # спред + комиссия за сделку
+    pnl_usd: float          # gross_pnl_usd - cost_usd
     exit_reason: str  # "stop", "take_profit" или "window_close"
 
 
@@ -121,7 +123,8 @@ def simulate_trade(signal: Signal, day_bars: pd.DataFrame, equity: float, effect
     # см. ASSUMED_SPREAD_POINTS в config.py и предупреждение в README).
     spread_cost = config.ASSUMED_SPREAD_POINTS * POINT * config.CONTRACT_SIZE * lot
     commission_cost = config.COMMISSION_PER_LOT_USD * lot
-    pnl_usd = gross_pnl - spread_cost - commission_cost
+    cost = spread_cost + commission_cost
+    pnl_usd = gross_pnl - cost
 
     return Trade(
         date=signal.entry_time.date(),
@@ -133,6 +136,8 @@ def simulate_trade(signal: Signal, day_bars: pd.DataFrame, equity: float, effect
         stop_price=signal.stop_price,
         take_profit_price=signal.take_profit_price,
         lot=lot,
+        gross_pnl_usd=gross_pnl,
+        cost_usd=cost,
         pnl_usd=pnl_usd,
         exit_reason=exit_reason,
     )
