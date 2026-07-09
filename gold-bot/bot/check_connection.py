@@ -15,7 +15,13 @@
 """
 
 import sys
+from pathlib import Path
 from datetime import datetime, timezone, timedelta
+
+# Добавляем корневую папку проекта (gold-bot/) в пути поиска модулей.
+# Без этого `import config` работает только если запускать скрипт из корня проекта -
+# Python по умолчанию ищет модули рядом со скриптом, а не в текущей папке.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 try:
     import MetaTrader5 as mt5
