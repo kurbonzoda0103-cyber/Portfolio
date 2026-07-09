@@ -372,3 +372,35 @@ def trend_filtered_momentum(day_bars: pd.DataFrame, h1_trend: str | None) -> Sig
     if signal is None or signal.direction != h1_trend:
         return None
     return signal
+
+
+# --- Momentum Continuation + confluence с VWAP ---
+# Фильтр по тренду H1 испортил momentum_continuation (edge упал с $0.235 до
+# $0.161/сделку). Но и momentum_continuation, и vwap_cross по ОТДЕЛЬНОСТИ
+# показали положительный сырой сигнал - в отличие от H1 EMA20 (слишком
+# медленный ориентир для 4-часового окна), VWAP пересчитывается внутри самой
+# сессии и может согласовываться с моментумом лучше. Пробуем конфлюэнс: сигнал
+# momentum_continuation принимаем только если цена в момент входа на той же
+# стороне VWAP, что и направление сигнала - два независимых индикатора должны
+# совпасть, а не просто добавляем ещё один произвольный фильтр с нуля.
+def momentum_vwap_confluence(day_bars: pd.DataFrame) -> Signal | None:
+    """day_bars - M15 свечи одного дня внутри торгового окна, отсортированы по времени."""
+
+    signal = momentum_continuation(day_bars)
+    if signal is None:
+        return None
+
+    day_bars = day_bars.reset_index(drop=True)
+    vwap = _session_vwap(day_bars)
+
+    entry_idx = day_bars.index[day_bars["time_local"] == signal.entry_time]
+    if len(entry_idx) == 0:
+        return None
+    idx = entry_idx[0]
+
+    price_side = "above" if day_bars.loc[idx, "close"] > vwap.loc[idx] else "below"
+    expected_side = "above" if signal.direction == "long" else "below"
+
+    if price_side != expected_side:
+        return None
+    return signal
