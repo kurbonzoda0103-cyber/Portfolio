@@ -15,6 +15,7 @@
 """
 
 import sys
+import time
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
@@ -109,10 +110,24 @@ def main():
         mt5.symbol_select(SYMBOL, True)
         symbol_info = mt5.symbol_info(SYMBOL)  # перечитываем после добавления в обзор рынка
 
-    # 4. Текущая котировка и спред
+    # 4. Текущая котировка и спред.
+    # Если символ только что добавлен в Market Watch, первый тик приходит не мгновенно -
+    # подождём немного и переспросим, вместо того чтобы сразу считать спред по нулям.
     tick = mt5.symbol_info_tick(SYMBOL)
-    if tick is None:
-        print(f"\nНе удалось получить котировку по {SYMBOL}.")
+    attempts = 0
+    while tick is not None and tick.time == 0 and attempts < 10:
+        time.sleep(0.5)
+        tick = mt5.symbol_info_tick(SYMBOL)
+        attempts += 1
+
+    if tick is None or tick.time == 0:
+        print(f"\nНе удалось получить живую котировку по {SYMBOL} (bid/ask пустые).")
+        print("Возможные причины:")
+        print("  - сейчас перерыв в торгах у брокера (у CFD на золото бывает короткая")
+        print("    техническая пауза около смены торгового дня);")
+        print("  - символ только что добавлен в Market Watch - откройте его график в терминале")
+        print("    вручную (двойной клик в Market Watch) и запустите скрипт ещё раз;")
+        print("  - сейчас выходные - рынок золота закрыт.")
         mt5.shutdown()
         sys.exit(1)
 
