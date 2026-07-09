@@ -56,7 +56,7 @@ def load_data() -> pd.DataFrame:
     return df
 
 
-def compute_hourly_stats(df: pd.DataFrame) -> pd.DataFrame:
+def compute_hourly_stats(df: pd.DataFrame):
     # Группируем по (дата, час) - это один "час торговли" в конкретный день.
     # high/low берём экстремумы внутри часа, а не среднее по 15-минуткам -
     # так не теряем движение, если цена внутри часа сходила туда-обратно.
@@ -66,22 +66,46 @@ def compute_hourly_stats(df: pd.DataFrame) -> pd.DataFrame:
         volume=("tick_volume", "sum"),
     )
     per_hour_per_day["range"] = per_hour_per_day["high"] - per_hour_per_day["low"]
+    per_hour_per_day = per_hour_per_day.reset_index()
+    per_hour_per_day["weekday"] = pd.to_datetime(per_hour_per_day["date"]).dt.weekday  # 0=Пн ... 6=Вс
 
     # Усредняем по всем дням, отдельно для каждого часа суток (0-23).
+    # avg vs median - если среднее сильно больше медианы, значит его тянут вверх
+    # несколько дней-выбросов, а не стабильно высокая волатильность каждый день.
     stats = per_hour_per_day.groupby("hour").agg(
         avg_range_usd=("range", "mean"),
         median_range_usd=("range", "median"),
+        max_range_usd=("range", "max"),
         avg_volume=("volume", "mean"),
         days_count=("range", "count"),
     )
     stats["avg_range_points"] = stats["avg_range_usd"] / 0.01  # у золота point обычно 0.01
-    return stats.sort_index()
+    return stats.sort_index(), per_hour_per_day
 
 
-def window_average(stats: pd.DataFrame, start_hour: int, end_hour: int) -> float:
-    """Средняя волатильность внутри часового окна [start_hour, end_hour)."""
+def window_average(stats: pd.DataFrame, start_hour: int, end_hour: int, column: str = "avg_range_usd") -> float:
+    """Среднее значение колонки внутри часового окна [start_hour, end_hour)."""
     hours = [h % 24 for h in range(start_hour, end_hour)]
-    return stats.loc[stats.index.intersection(hours), "avg_range_usd"].mean()
+    return stats.loc[stats.index.intersection(hours), column].mean()
+
+
+WEEKDAYS_RU = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+
+# Если среднее в часе больше медианы в OUTLIER_RATIO раз - подозреваем, что среднее
+# тянут вверх редкие дни-выбросы (недельный гэп открытия, технический артефакт
+# смены торгового дня у брокера), а не стабильно высокая волатильность каждый день.
+OUTLIER_RATIO = 2.0
+
+
+def print_weekday_breakdown(per_hour_per_day: pd.DataFrame, hour: int):
+    subset = per_hour_per_day[per_hour_per_day["hour"] == hour]
+    by_weekday = subset.groupby("weekday")["range"].agg(["mean", "median", "max", "count"])
+    for wd, row in by_weekday.iterrows():
+        name = WEEKDAYS_RU[wd] if wd < len(WEEKDAYS_RU) else str(wd)
+        print(
+            f"    {name}: среднее {row['mean']:.2f}$, медиана {row['median']:.2f}$, "
+            f"максимум {row['max']:.2f}$, дней {int(row['count'])}"
+        )
 
 
 def main():
@@ -90,34 +114,51 @@ def main():
     print("=" * 70)
 
     df = load_data()
-    stats = compute_hourly_stats(df)
+    stats, per_hour_per_day = compute_hourly_stats(df)
 
     print(f"\nВсего дней в выборке: {stats['days_count'].max()} (по самому полному часу)")
     print(f"Период данных: {df['time_local'].min()} -> {df['time_local'].max()}\n")
 
-    print(f"{'Час':>4} | {'Ср. размах $':>13} | {'Ср. размах, пункты':>19} | {'Ср. объём (тики)':>17} | Дней")
+    print(f"{'Час':>4} | {'Ср. $':>8} | {'Медиана $':>9} | {'Макс $':>8} | {'Пункты':>8} | {'Ср. объём':>10} | Дней")
     print("-" * 70)
     for hour, row in stats.iterrows():
         print(
-            f"{hour:>4} | {row['avg_range_usd']:>13.2f} | {row['avg_range_points']:>19.1f} | "
-            f"{row['avg_volume']:>17.0f} | {int(row['days_count'])}"
+            f"{hour:>4} | {row['avg_range_usd']:>8.2f} | {row['median_range_usd']:>9.2f} | "
+            f"{row['max_range_usd']:>8.2f} | {row['avg_range_points']:>8.1f} | "
+            f"{row['avg_volume']:>10.0f} | {int(row['days_count'])}"
         )
+
+    # Проверяем, нет ли часов, где среднее раздуто редкими выбросами (см. OUTLIER_RATIO).
+    suspicious = stats[stats["avg_range_usd"] > OUTLIER_RATIO * stats["median_range_usd"]]
+    if not suspicious.empty:
+        print("\n" + "!" * 70)
+        print("ВНИМАНИЕ: среднее заметно выше медианы в этих часах - похоже на выбросы")
+        print("(недельный гэп открытия рынка в воскресенье или технический артефакт смены")
+        print("торгового дня у брокера), а не на стабильную волатильность каждый день:")
+        for hour, row in suspicious.iterrows():
+            print(f"\n  {hour}:00 - среднее {row['avg_range_usd']:.2f}$, медиана {row['median_range_usd']:.2f}$, максимум {row['max_range_usd']:.2f}$")
+            print_weekday_breakdown(per_hour_per_day, hour)
+        print("\n" + "!" * 70)
+        print("Эти часы исключены из сравнения окон и топ-листа ниже, чтобы выбросы")
+        print("не искажали общий вывод. Числа по ним остаются в hourly_stats.csv.")
+
+    clean_stats = stats.drop(index=suspicious.index)
 
     window_start_hour = int(config.TRADING_WINDOW_START.split(":")[0])
     window_end_hour = int(config.TRADING_WINDOW_END.split(":")[0])
 
-    trading_window_avg = window_average(stats, window_start_hour, window_end_hour)
-    midday_avg = window_average(stats, MIDDAY_START_HOUR, MIDDAY_END_HOUR)
-    full_day_avg = stats["avg_range_usd"].mean()
+    trading_window_avg = window_average(clean_stats, window_start_hour, window_end_hour)
+    midday_avg = window_average(clean_stats, MIDDAY_START_HOUR, MIDDAY_END_HOUR)
+    full_day_avg = clean_stats["avg_range_usd"].mean()
 
     print("\n" + "-" * 70)
-    print("Сравнение окон (средний часовой размах в $):")
+    print("Сравнение окон без выбросов (средний часовой размах в $):")
     print(f"  Торговое окно {config.TRADING_WINDOW_START}-{config.TRADING_WINDOW_END} (Лондон+NY): {trading_window_avg:.2f} $/час")
     print(f"  Середина дня {MIDDAY_START_HOUR:02d}:00-{MIDDAY_END_HOUR:02d}:00:                {midday_avg:.2f} $/час")
-    print(f"  Весь день (среднее по всем часам):                {full_day_avg:.2f} $/час")
+    print(f"  Весь день (среднее по всем часам, без выбросов):  {full_day_avg:.2f} $/час")
 
-    top_hours = stats["avg_range_usd"].sort_values(ascending=False).head(5)
-    print(f"\nТоп-5 часов по волатильности: {', '.join(f'{h}:00' for h in top_hours.index)}")
+    top_hours = clean_stats["avg_range_usd"].sort_values(ascending=False).head(5)
+    print(f"\nТоп-5 часов по волатильности (без выбросов): {', '.join(f'{h}:00' for h in top_hours.index)}")
 
     if trading_window_avg > midday_avg:
         diff_pct = (trading_window_avg / midday_avg - 1) * 100
@@ -135,11 +176,16 @@ def main():
 
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(11, 8), sharex=True)
 
-    ax1.bar(stats.index, stats["avg_range_usd"], color="tab:orange")
+    # Часы-выбросы красим отдельным цветом на графике, чтобы визуально не путать
+    # их со стабильно высокой волатильностью торгового окна.
+    bar_colors = ["tab:red" if h in suspicious.index else "tab:orange" for h in stats.index]
+    ax1.bar(stats.index, stats["avg_range_usd"], color=bar_colors)
     ax1.set_ylabel("Средний размах, $")
     ax1.set_title(f"{config.SYMBOL}: волатильность и объём по часам суток (UTC+{config.MY_TIMEZONE_OFFSET_HOURS})")
     ax1.axvspan(window_start_hour - 0.5, window_end_hour - 0.5, color="green", alpha=0.15, label="Торговое окно")
     ax1.axvspan(MIDDAY_START_HOUR - 0.5, MIDDAY_END_HOUR - 0.5, color="blue", alpha=0.1, label="Середина дня")
+    if not suspicious.empty:
+        ax1.bar([], [], color="tab:red", label="Похоже на выброс (см. вывод в консоли)")
     ax1.legend()
 
     ax2.bar(stats.index, stats["avg_volume"], color="tab:blue")
