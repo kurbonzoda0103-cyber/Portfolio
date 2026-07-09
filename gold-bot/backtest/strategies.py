@@ -311,14 +311,20 @@ MOMENTUM_STOP_BUFFER_USD = 0.0
 MOMENTUM_RR = 1.5
 
 
-def momentum_continuation(day_bars: pd.DataFrame, rr: float = MOMENTUM_RR) -> Signal | None:
+def momentum_continuation(
+    day_bars: pd.DataFrame,
+    rr: float = MOMENTUM_RR,
+    consecutive_bars: int = MOMENTUM_CONSECUTIVE_BARS,
+) -> Signal | None:
     """day_bars - M15 свечи одного дня внутри торгового окна, отсортированы по времени.
 
-    rr - множитель тейк-профита к риску, параметризован, чтобы сравнивать разные
-    цели (например, 1.5R по умолчанию против 1R) без копирования функции."""
+    rr - множитель тейк-профита к риску, consecutive_bars - сколько баров подряд
+    нужно для подтверждения моментума. Оба параметризованы, чтобы сравнивать
+    варианты (например, TP=1.5R против 1R, 3 бара против 5) без копирования
+    функции."""
 
     day_bars = day_bars.reset_index(drop=True)
-    n = MOMENTUM_CONSECUTIVE_BARS
+    n = consecutive_bars
 
     if len(day_bars) <= n:
         return None
