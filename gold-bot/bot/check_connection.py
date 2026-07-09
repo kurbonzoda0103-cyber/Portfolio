@@ -33,10 +33,12 @@ except ImportError:
 
 import config
 
-SYMBOL = config.SYMBOL
-
 
 def main():
+    # Можно передать другой символ первым аргументом, чтобы проверить/замерить
+    # спред другого инструмента, не трогая config.py: `python bot\check_connection.py EURUSD`
+    SYMBOL = sys.argv[1] if len(sys.argv) > 1 else config.SYMBOL
+
     # 1. Подключаемся к уже открытому терминалу. Логин/пароль здесь не нужны -
     # терминал должен быть заранее вручную залогинен в демо-счёт XM.
     if not mt5.initialize():
@@ -85,23 +87,27 @@ def main():
     if symbol_info is None:
         print(f"\nСимвол {SYMBOL} не найден у брокера.")
 
-        # Ищем среди ВСЕХ символов брокера похожие на золото - имена отличаются
-        # у разных брокеров и типов счетов (XAUUSD, XAUUSD.m, GOLD, GOLDmicro и т.п.)
+        # Ищем среди ВСЕХ символов брокера похожие имена - у разных брокеров и
+        # типов счетов бывают суффиксы (XAUUSD.m, EURUSD.m, GOLDmicro и т.п.).
+        # Для золота дополнительно ищем по "XAU"/"GOLD" - самое частое имя не по SYMBOL.
         all_symbols = mt5.symbols_get()
+        search_terms = [SYMBOL.upper()]
+        if SYMBOL.upper() in ("GOLD", "XAUUSD"):
+            search_terms += ["XAU", "GOLD"]
         candidates = sorted(
-            s.name for s in all_symbols
-            if "XAU" in s.name.upper() or "GOLD" in s.name.upper()
+            {s.name for s in all_symbols if any(term in s.name.upper() for term in search_terms)}
         )
 
         if candidates:
             print("Похожие символы найдены у брокера - вероятно, нужен один из них:")
             for name in candidates:
                 print(f"  - {name}")
-            print(f"\nОткройте config.py и замените SYMBOL = \"{SYMBOL}\" на подходящее имя.")
+            print(f"\nЛибо запустите скрипт с этим именем: python bot\\check_connection.py <имя>,")
+            print(f"либо (для основного инструмента) откройте config.py и поправьте SYMBOL.")
         else:
-            print("Ни одного похожего на золото символа не нашлось вообще.")
+            print(f"Ни одного похожего на \"{SYMBOL}\" символа не нашлось вообще.")
             print("Откройте в терминале Market Watch (Ctrl+M) -> правой кнопкой -> Symbols (Ctrl+U),")
-            print("найдите там золото вручную и впишите точное имя в config.py -> SYMBOL.")
+            print("найдите инструмент вручную и используйте точное имя оттуда.")
 
         mt5.shutdown()
         sys.exit(1)
@@ -131,8 +137,8 @@ def main():
         mt5.shutdown()
         sys.exit(1)
 
-    point = symbol_info.point                       # шаг цены (обычно 0.01 у золота)
-    contract_size = symbol_info.trade_contract_size  # унций золота на 1 лот - берём у брокера, не считаем "на глаз"
+    point = symbol_info.point                       # шаг цены (обычно 0.01 у золота, 0.00001 у EURUSD)
+    contract_size = symbol_info.trade_contract_size  # единиц базового актива на 1 лот - берём у брокера, не на глаз
     spread_points = (tick.ask - tick.bid) / point
     spread_usd_per_lot = (tick.ask - tick.bid) * contract_size
     spread_usd_001_lot = spread_usd_per_lot * 0.01
@@ -144,13 +150,13 @@ def main():
     print(f"Bid:                     {tick.bid}")
     print(f"Ask:                     {tick.ask}")
     print(f"Шаг цены (point):        {point}")
-    print(f"Contract size:           {contract_size} (унций золота на 1 лот)")
+    print(f"Contract size:           {contract_size} (единиц базового актива на 1 лот)")
     print(f"Спред:                   {spread_points:.1f} пунктов")
     print(f"Спред в $ на лот 0.01:   ${spread_usd_001_lot:.2f}")
     print()
-    print("Это МГНОВЕННЫЙ замер - спред у золота гуляет в течение дня (шире на новостях")
-    print("и в моменты низкой ликвидности). Для бэктеста на этапе 3 такие замеры нужно")
-    print("будет сделать несколько раз в разное время суток, а не полагаться на один запуск.")
+    print("Это МГНОВЕННЫЙ замер - спред гуляет в течение дня (шире на новостях и в")
+    print("моменты низкой ликвидности). Для честного бэктеста такие замеры нужно делать")
+    print("несколько раз в разное время суток, а не полагаться на один запуск.")
 
     # 5. Время сервера vs UTC - нужно для этапа 2 (анализ по часам суток в UTC+5)
     server_time = datetime.fromtimestamp(tick.time, tz=timezone.utc)

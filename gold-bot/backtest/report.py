@@ -8,7 +8,15 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 
-def print_report(trades, equity_df: pd.DataFrame, starting_equity: float, title: str):
+DEFAULT_SPREAD_NOTE = (
+    "ВАЖНО: спред взят из ОДНОГО вечернего замера ($0.52 на лот 0.01) - это\n"
+    "приближение, а не факт на каждый час торгового окна (config.py -> ASSUMED_SPREAD_POINTS)."
+)
+
+
+def print_report(
+    trades, equity_df: pd.DataFrame, starting_equity: float, title: str, spread_note: str = DEFAULT_SPREAD_NOTE
+):
     print("=" * 60)
     print(title)
     print("=" * 60)
@@ -63,8 +71,7 @@ def print_report(trades, equity_df: pd.DataFrame, starting_equity: float, title:
     print(f"\nПричины закрытия сделок: {dict(by_reason)}")
 
     print()
-    print("ВАЖНО: спред взят из ОДНОГО вечернего замера ($0.52 на лот 0.01) - это")
-    print("приближение, а не факт на каждый час торгового окна (config.py -> ASSUMED_SPREAD_POINTS).")
+    print(spread_note)
     print("Исторические новости (NFP/ФРС/CPI) сейчас НЕ исключены - config.py -> NEWS_DATES_UTC пуст.")
 
 

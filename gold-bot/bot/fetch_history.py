@@ -4,7 +4,10 @@
 Что делает скрипт:
 1. Подключается к уже запущенному терминалу MT5 (как check_connection.py).
 2. Для таймфреймов M5, M15, H1 запрашивает у брокера ВСЮ доступную историю по
-   символу из config.SYMBOL (сколько бы лет брокер ни хранил).
+   символу (по умолчанию - config.SYMBOL, но можно передать другой символ
+   первым аргументом: `python bot\\fetch_history.py EURUSD`, например, чтобы
+   проверить ту же стратегию на другом инструменте, не трогая настройки
+   золота в config.py).
    MT5 отдаёт максимум около 100 000 свечей за один запрос и молча обрезает
    остальное - поэтому тянем историю порциями (пагинацией) через
    copy_rates_from_pos, пока брокер не перестанет отдавать новые данные.
@@ -16,7 +19,7 @@
 
 Запускать на Windows с открытым и залогиненным терминалом MT5.
 Перед запуском: bot/check_connection.py уже должен был отработать и подтвердить
-SYMBOL и SERVER_UTC_OFFSET_HOURS в config.py - без них время будет посчитано неверно.
+SERVER_UTC_OFFSET_HOURS в config.py - без него время будет посчитано неверно.
 """
 
 import sys
@@ -85,6 +88,8 @@ def fetch_one_timeframe(symbol: str, tf_name: str, tf_value: int) -> pd.DataFram
 
 
 def main():
+    symbol = sys.argv[1] if len(sys.argv) > 1 else config.SYMBOL
+
     if config.SERVER_UTC_OFFSET_HOURS is None:
         print("В config.py не заполнено SERVER_UTC_OFFSET_HOURS.")
         print("Сначала запустите bot/check_connection.py и впишите смещение сервера от UTC.")
@@ -96,30 +101,30 @@ def main():
         print("Терминал должен быть запущен и залогинен в демо-счёт XM.")
         sys.exit(1)
 
-    symbol_info = mt5.symbol_info(config.SYMBOL)
+    symbol_info = mt5.symbol_info(symbol)
     if symbol_info is None:
-        print(f"Символ {config.SYMBOL} не найден у брокера. Проверьте config.py -> SYMBOL")
-        print("(запустите bot/check_connection.py - он подскажет правильное имя).")
+        print(f"Символ {symbol} не найден у брокера.")
+        print("Проверьте точное название в Market Watch терминала.")
         mt5.shutdown()
         sys.exit(1)
 
     if not symbol_info.visible:
-        mt5.symbol_select(config.SYMBOL, True)
+        mt5.symbol_select(symbol, True)
 
     data_dir = Path(config.DATA_DIR)
     data_dir.mkdir(parents=True, exist_ok=True)
 
     print("=" * 60)
-    print(f"Выгрузка истории {config.SYMBOL} с сервера {mt5.account_info().server}")
+    print(f"Выгрузка истории {symbol} с сервера {mt5.account_info().server}")
     print("=" * 60)
 
     for tf_name, tf_value in TIMEFRAMES.items():
         print(f"\n{tf_name}: запрашиваю у брокера...")
-        df = fetch_one_timeframe(config.SYMBOL, tf_name, tf_value)
+        df = fetch_one_timeframe(symbol, tf_name, tf_value)
         if df is None:
             continue
 
-        out_path = data_dir / f"{config.SYMBOL}_{tf_name}.parquet"
+        out_path = data_dir / f"{symbol}_{tf_name}.parquet"
         df.to_parquet(out_path, index=False)
 
         first_candle = df["time_local"].min()

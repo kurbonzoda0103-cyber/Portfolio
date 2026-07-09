@@ -21,7 +21,28 @@ import pandas as pd
 import config
 from backtest.strategies import Signal
 
-POINT = 0.01  # шаг цены золота у этого брокера (см. bot/check_connection.py)
+
+@dataclass
+class Instrument:
+    """Параметры конкретного инструмента - вынесены из движка, чтобы одна и та
+    же стратегия/движок могли гонять и золото, и, например, EURUSD без
+    копирования кода. Для золота значения берём из config.py (там они уже
+    измерены через bot/check_connection.py); для других инструментов - см.
+    комментарии в соответствующем run_backtest_*.py, что из них реально
+    измерено, а что пока приближение."""
+
+    point: float             # шаг цены (например, 0.01 у золота, 0.00001 у EURUSD с 5 знаками)
+    contract_size: float     # единиц базового актива на 1 лот
+    spread_points: float     # спред в пунктах - одно приближение, не факт на каждый час (см. README)
+    commission_per_lot_usd: float = 0.0
+
+
+GOLD = Instrument(
+    point=0.01,
+    contract_size=config.CONTRACT_SIZE,
+    spread_points=config.ASSUMED_SPREAD_POINTS,
+    commission_per_lot_usd=config.COMMISSION_PER_LOT_USD,
+)
 
 
 @dataclass
@@ -57,9 +78,11 @@ def is_news_blackout(ts_local: pd.Timestamp) -> bool:
     return False
 
 
-def size_position(equity: float, entry_price: float, stop_price: float) -> float:
+def size_position(equity: float, entry_price: float, stop_price: float, instrument: Instrument) -> float:
     """Лот от риска на сделку (config.RISK_PER_TRADE_PCT), с ограничением по
     эффективному плечу (config.MAX_EFFECTIVE_LEVERAGE) и минимальному лоту.
+    Риск-лимиты - общие для всех инструментов (правила проекта), а вот
+    contract_size - специфика конкретного инструмента.
 
     Округляем ВНИЗ до шага MIN_LOT - округлять вверх нельзя, это превысит
     разрешённый риск 1% на сделку.
@@ -69,17 +92,19 @@ def size_position(equity: float, entry_price: float, stop_price: float) -> float
     if stop_distance <= 0:
         return 0.0
 
-    lot = risk_amount / (stop_distance * config.CONTRACT_SIZE)
+    lot = risk_amount / (stop_distance * instrument.contract_size)
 
-    max_lot_by_leverage = (config.MAX_EFFECTIVE_LEVERAGE * equity) / (entry_price * config.CONTRACT_SIZE)
+    max_lot_by_leverage = (config.MAX_EFFECTIVE_LEVERAGE * equity) / (entry_price * instrument.contract_size)
     lot = min(lot, max_lot_by_leverage)
 
     lot = (lot // config.MIN_LOT) * config.MIN_LOT
     return max(0.0, round(lot, 2))
 
 
-def simulate_trade(signal: Signal, day_bars: pd.DataFrame, equity: float, effective_end: pd.Timestamp) -> Trade | None:
-    lot = size_position(equity, signal.entry_price, signal.stop_price)
+def simulate_trade(
+    signal: Signal, day_bars: pd.DataFrame, equity: float, effective_end: pd.Timestamp, instrument: Instrument
+) -> Trade | None:
+    lot = size_position(equity, signal.entry_price, signal.stop_price, instrument)
     if lot < config.MIN_LOT:
         return None  # риск на минимальном лоте уже больше 1% - сделку не открываем
 
@@ -118,11 +143,12 @@ def simulate_trade(signal: Signal, day_bars: pd.DataFrame, equity: float, effect
         exit_price, exit_time, exit_reason = last_bar["close"], last_bar["time_local"], "window_close"
 
     direction_sign = 1 if signal.direction == "long" else -1
-    gross_pnl = (exit_price - signal.entry_price) * direction_sign * config.CONTRACT_SIZE * lot
+    gross_pnl = (exit_price - signal.entry_price) * direction_sign * instrument.contract_size * lot
     # Спред считаем один раз за сделку (упрощение - нет отдельных bid/ask в истории,
-    # см. ASSUMED_SPREAD_POINTS в config.py и предупреждение в README).
-    spread_cost = config.ASSUMED_SPREAD_POINTS * POINT * config.CONTRACT_SIZE * lot
-    commission_cost = config.COMMISSION_PER_LOT_USD * lot
+    # см. instrument.spread_points и предупреждение в README - это приближение,
+    # а не измеренный факт на каждый час торгового окна).
+    spread_cost = instrument.spread_points * instrument.point * instrument.contract_size * lot
+    commission_cost = instrument.commission_per_lot_usd * lot
     cost = spread_cost + commission_cost
     pnl_usd = gross_pnl - cost
 
@@ -143,13 +169,14 @@ def simulate_trade(signal: Signal, day_bars: pd.DataFrame, equity: float, effect
     )
 
 
-def run_backtest(df: pd.DataFrame, starting_equity: float, signal_fn):
+def run_backtest(df: pd.DataFrame, starting_equity: float, signal_fn, instrument: Instrument = GOLD):
     """Возвращает (список Trade, DataFrame кривой капитала).
 
     signal_fn(day_bars, date) -> Signal | None - генерирует сигнал входа для
-    конкретного торгового дня. Движок не привязан к конкретной стратегии -
-    ORB, фильтр по тренду и т.д. передаются как обычная функция, чтобы не
-    плодить копию всего движка под каждую новую идею.
+    конкретного торгового дня. Движок не привязан ни к конкретной стратегии
+    (ORB, фильтр по тренду и т.д. передаются как обычная функция), ни к
+    конкретному инструменту (instrument задаёт point/contract_size/спред) -
+    чтобы не плодить копию всего движка под каждую новую идею или инструмент.
     """
 
     trades: list[Trade] = []
@@ -180,7 +207,7 @@ def run_backtest(df: pd.DataFrame, starting_equity: float, signal_fn):
         if signal is None:
             continue
 
-        trade = simulate_trade(signal, day_bars, equity, effective_end)
+        trade = simulate_trade(signal, day_bars, equity, effective_end, instrument)
         if trade is None:
             continue
 
