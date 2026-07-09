@@ -39,6 +39,11 @@ EURUSD_POINT = 0.00001        # 5-значная котировка (1 пипс 
 EURUSD_CONTRACT_SIZE = 100_000  # единиц EUR на 1 стандартный лот
 EURUSD_SPREAD_POINTS = 15     # ПРИБЛИЖЕНИЕ: типичный спред форекс-мажора на стандартном счёте (~1.5 пипса)
 
+# Евро как валюта появился только 01.01.1999 - всё, что раньше в истории брокера,
+# синтетика/реконструкция для графиков, а не реальные торги. Отрезаем эти годы,
+# иначе бэктест частично проверяется на не-настоящих данных.
+MIN_DATE = "1999-01-01"
+
 
 def load_data() -> pd.DataFrame:
     path = Path(config.DATA_DIR) / f"{SYMBOL}_M15.parquet"
@@ -46,7 +51,14 @@ def load_data() -> pd.DataFrame:
         print(f"Не найден файл {path}.")
         print(f"Сначала запустите: python bot\\fetch_history.py {SYMBOL}")
         sys.exit(1)
-    return pd.read_parquet(path)
+
+    df = pd.read_parquet(path)
+    before = len(df)
+    df = df[df["time_local"] >= MIN_DATE].reset_index(drop=True)
+    dropped = before - len(df)
+    if dropped:
+        print(f"Отброшено {dropped} свечей до {MIN_DATE} (синтетическая до-euro история брокера).")
+    return df
 
 
 def main():
