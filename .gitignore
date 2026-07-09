@@ -31,3 +31,8 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# gold-bot: данные и логи - только локально, легко перекачиваются заново
+/gold-bot/data/*.parquet
+/gold-bot/logs/*.log
+/gold-bot/venv/
