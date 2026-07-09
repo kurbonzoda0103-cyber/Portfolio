@@ -83,8 +83,25 @@ def main():
     symbol_info = mt5.symbol_info(SYMBOL)
     if symbol_info is None:
         print(f"\nСимвол {SYMBOL} не найден у брокера.")
-        print("Откройте Market Watch в терминале и проверьте точное название золота у XM")
-        print("(бывает XAUUSD, реже XAUUSD.m и т.п.) - поправьте SYMBOL в config.py.")
+
+        # Ищем среди ВСЕХ символов брокера похожие на золото - имена отличаются
+        # у разных брокеров и типов счетов (XAUUSD, XAUUSD.m, GOLD, GOLDmicro и т.п.)
+        all_symbols = mt5.symbols_get()
+        candidates = sorted(
+            s.name for s in all_symbols
+            if "XAU" in s.name.upper() or "GOLD" in s.name.upper()
+        )
+
+        if candidates:
+            print("Похожие символы найдены у брокера - вероятно, нужен один из них:")
+            for name in candidates:
+                print(f"  - {name}")
+            print(f"\nОткройте config.py и замените SYMBOL = \"{SYMBOL}\" на подходящее имя.")
+        else:
+            print("Ни одного похожего на золото символа не нашлось вообще.")
+            print("Откройте в терминале Market Watch (Ctrl+M) -> правой кнопкой -> Symbols (Ctrl+U),")
+            print("найдите там золото вручную и впишите точное имя в config.py -> SYMBOL.")
+
         mt5.shutdown()
         sys.exit(1)
 
