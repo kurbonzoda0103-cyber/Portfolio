@@ -154,3 +154,60 @@ def range_fade(day_bars: pd.DataFrame) -> Signal | None:
                 return Signal("long", entry, stop, range_high, bar["time_local"])
 
     return None  # пробоя не было, либо цена так и не вернулась в диапазон
+
+
+# --- VWAP Cross ---
+# Идея: VWAP (средняя цена дня, взвешенная по объёму tick_volume) - ориентир
+# "справедливой" цены сессии. Пока цена ниже VWAP - на рынке перевес продавцов,
+# выше - покупателей. Даём VWAP_WARMUP_MINUTES "разогреться" (в начале окна он
+# неустойчив из-за малого числа баров), потом входим по первому пересечению цены
+# и VWAP в сторону пересечения (моментум-продолжение, а не разворот).
+VWAP_WARMUP_MINUTES = 30
+VWAP_RR = 1.5
+
+
+def _session_vwap(day_bars: pd.DataFrame) -> pd.Series:
+    typical_price = (day_bars["high"] + day_bars["low"] + day_bars["close"]) / 3
+    cum_pv = (typical_price * day_bars["tick_volume"]).cumsum()
+    cum_volume = day_bars["tick_volume"].cumsum()
+    return cum_pv / cum_volume
+
+
+def vwap_cross(day_bars: pd.DataFrame) -> Signal | None:
+    """day_bars - M15 свечи одного дня внутри торгового окна, отсортированы по времени."""
+
+    bar_minutes = 15  # ожидаем M15
+    warmup_bar_count = max(1, VWAP_WARMUP_MINUTES // bar_minutes)
+
+    if len(day_bars) <= warmup_bar_count + 1:
+        return None
+
+    day_bars = day_bars.reset_index(drop=True)
+    vwap = _session_vwap(day_bars)
+
+    prev_side = None  # "above" или "below" - где была цена относительно VWAP на предыдущем баре
+
+    for i in range(warmup_bar_count, len(day_bars)):
+        bar = day_bars.iloc[i]
+        side = "above" if bar["close"] > vwap.iloc[i] else "below"
+
+        if prev_side is not None and side != prev_side:
+            entry = bar["close"]
+            recent = day_bars.iloc[max(0, i - 2): i + 1]  # последние пару баров - ориентир для стопа
+
+            if side == "above":
+                stop = recent["low"].min()
+                if stop >= entry:
+                    return None
+                risk = entry - stop
+                return Signal("long", entry, stop, entry + risk * VWAP_RR, bar["time_local"])
+            else:
+                stop = recent["high"].max()
+                if stop <= entry:
+                    return None
+                risk = stop - entry
+                return Signal("short", entry, stop, entry - risk * VWAP_RR, bar["time_local"])
+
+        prev_side = side
+
+    return None  # пересечения после разогрева не было
