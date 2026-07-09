@@ -9,9 +9,15 @@
 пока не получится нужная кривая доходности (это оверфиттинг).
 """
 
+import sys
 from dataclasses import dataclass
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pandas as pd
+
+import config
 
 # --- Opening Range Breakout (ORB) ---
 # Идея: в начале торгового окна (пересечение сессий Лондон+Нью-Йорк) волатильность
@@ -98,6 +104,39 @@ def trend_filtered_orb(day_bars: pd.DataFrame, h1_trend: str | None) -> Signal |
     if signal is None or signal.direction != h1_trend:
         return None
     return signal
+
+
+def build_trend_lookup(m15_df: pd.DataFrame, h1_df: pd.DataFrame) -> dict:
+    """Для каждого торгового дня определяет тренд H1 на момент начала окна,
+    используя только уже закрытые H1-бары (см. compute_h1_trend_series).
+    Общий помощник для всех стратегий с фильтром по тренду."""
+
+    h1_trend = compute_h1_trend_series(h1_df)
+
+    dates = sorted(m15_df["time_local"].dt.date.unique())
+    windows = pd.DataFrame({
+        "date": dates,
+        "window_start": [pd.Timestamp(f"{d} {config.TRADING_WINDOW_START}") for d in dates],
+    }).sort_values("window_start")
+
+    merged = pd.merge_asof(
+        windows,
+        h1_trend.sort_values("confirmed_time"),
+        left_on="window_start",
+        right_on="confirmed_time",
+        direction="backward",
+    )
+
+    trend_by_date = {}
+    for _, row in merged.iterrows():
+        if pd.isna(row["ema"]) or row["close"] == row["ema"]:
+            trend_by_date[row["date"]] = None
+        elif row["close"] > row["ema"]:
+            trend_by_date[row["date"]] = "long"
+        else:
+            trend_by_date[row["date"]] = "short"
+
+    return trend_by_date
 
 
 # --- Range Fade (mean-reversion от ложного пробоя) ---
@@ -306,3 +345,21 @@ def momentum_continuation(day_bars: pd.DataFrame) -> Signal | None:
             return Signal("short", entry, stop, entry - risk * MOMENTUM_RR, entry_bar["time_local"])
 
     return None  # подтверждённого моментума за окно не случилось
+
+
+# --- Momentum Continuation + фильтр тренда H1 ---
+# Из всех протестированных идей momentum_continuation показал лучший сырой edge
+# на сделку ($0.235 против $0.09 у второго места, VWAP) - но всё ещё в минусе
+# после costов. Пробуем усилить его тем же фильтром тренда, что помог ORB:
+# подтверждённый моментум принимаем только по направлению тренда H1.
+def trend_filtered_momentum(day_bars: pd.DataFrame, h1_trend: str | None) -> Signal | None:
+    """Как momentum_continuation, но сигнал принимается только если его
+    направление совпадает с h1_trend ("long"/"short")."""
+
+    if h1_trend is None:
+        return None
+
+    signal = momentum_continuation(day_bars)
+    if signal is None or signal.direction != h1_trend:
+        return None
+    return signal

@@ -37,43 +37,11 @@ def load_parquet(timeframe: str) -> pd.DataFrame:
     return pd.read_parquet(path)
 
 
-def build_trend_lookup(m15_df: pd.DataFrame, h1_df: pd.DataFrame) -> dict:
-    """Для каждого торгового дня определяет тренд H1 на момент начала окна,
-    используя только уже закрытые H1-бары (см. compute_h1_trend_series)."""
-
-    h1_trend = strategies.compute_h1_trend_series(h1_df)
-
-    dates = sorted(m15_df["time_local"].dt.date.unique())
-    windows = pd.DataFrame({
-        "date": dates,
-        "window_start": [pd.Timestamp(f"{d} {config.TRADING_WINDOW_START}") for d in dates],
-    }).sort_values("window_start")
-
-    merged = pd.merge_asof(
-        windows,
-        h1_trend.sort_values("confirmed_time"),
-        left_on="window_start",
-        right_on="confirmed_time",
-        direction="backward",
-    )
-
-    trend_by_date = {}
-    for _, row in merged.iterrows():
-        if pd.isna(row["ema"]) or row["close"] == row["ema"]:
-            trend_by_date[row["date"]] = None
-        elif row["close"] > row["ema"]:
-            trend_by_date[row["date"]] = "long"
-        else:
-            trend_by_date[row["date"]] = "short"
-
-    return trend_by_date
-
-
 def main():
     m15_df = load_parquet("M15")
     h1_df = load_parquet("H1")
 
-    trend_by_date = build_trend_lookup(m15_df, h1_df)
+    trend_by_date = strategies.build_trend_lookup(m15_df, h1_df)
 
     trend_counts = pd.Series(list(trend_by_date.values())).value_counts(dropna=False)
     print(f"Дней с трендом long: {trend_counts.get('long', 0)}, "
