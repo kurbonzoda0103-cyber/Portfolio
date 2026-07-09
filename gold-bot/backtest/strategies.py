@@ -98,3 +98,59 @@ def trend_filtered_orb(day_bars: pd.DataFrame, h1_trend: str | None) -> Signal |
     if signal is None or signal.direction != h1_trend:
         return None
     return signal
+
+
+# --- Range Fade (mean-reversion от ложного пробоя) ---
+# Идея: первый импульс в начале окна нередко оказывается ложным выносом - сессии
+# Лондон+Нью-Йорк ещё не набрали объём, ранние трейдеры входят по пробою и потом
+# разворачиваются. Ждём пробоя диапазона первых RANGE_FADE_MINUTES минут, и если
+# цена возвращается обратно ВНУТРЬ диапазона - входим ПРОТИВ направления пробоя,
+# на возврат к противоположной границе диапазона.
+RANGE_FADE_MINUTES = 30
+RANGE_FADE_STOP_BUFFER_USD = 0.0
+
+
+def range_fade(day_bars: pd.DataFrame) -> Signal | None:
+    """day_bars - M15 свечи одного дня внутри торгового окна, отсортированы по времени."""
+
+    bar_minutes = 15  # ожидаем M15
+    range_bar_count = max(1, RANGE_FADE_MINUTES // bar_minutes)
+
+    if len(day_bars) <= range_bar_count:
+        return None
+
+    range_bars = day_bars.iloc[:range_bar_count]
+    range_high = range_bars["high"].max()
+    range_low = range_bars["low"].min()
+    if range_high <= range_low:
+        return None
+
+    broke_direction = None  # None, "up" или "down"
+    extreme = None  # самая дальняя точка выноса за пределы диапазона (нужна для стопа)
+
+    for _, bar in day_bars.iloc[range_bar_count:].iterrows():
+        if broke_direction is None:
+            if bar["high"] > range_high:
+                broke_direction, extreme = "up", bar["high"]
+            elif bar["low"] < range_low:
+                broke_direction, extreme = "down", bar["low"]
+            continue  # ждём пробоя, прежде чем искать возврат
+
+        if broke_direction == "up":
+            extreme = max(extreme, bar["high"])
+            if bar["close"] < range_high:
+                entry = bar["close"]
+                stop = extreme + RANGE_FADE_STOP_BUFFER_USD
+                if stop <= entry:
+                    return None
+                return Signal("short", entry, stop, range_low, bar["time_local"])
+        else:
+            extreme = min(extreme, bar["low"])
+            if bar["close"] > range_low:
+                entry = bar["close"]
+                stop = extreme - RANGE_FADE_STOP_BUFFER_USD
+                if stop >= entry:
+                    return None
+                return Signal("long", entry, stop, range_high, bar["time_local"])
+
+    return None  # пробоя не было, либо цена так и не вернулась в диапазон
