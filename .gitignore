@@ -36,3 +36,4 @@ next-env.d.ts
 /gold-bot/data/*.parquet
 /gold-bot/logs/*.log
 /gold-bot/venv/
+/gold-bot/**/__pycache__/
