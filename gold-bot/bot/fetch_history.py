@@ -5,6 +5,9 @@
 1. Подключается к уже запущенному терминалу MT5 (как check_connection.py).
 2. Для таймфреймов M5, M15, H1 запрашивает у брокера ВСЮ доступную историю по
    символу из config.SYMBOL (сколько бы лет брокер ни хранил).
+   MT5 отдаёт максимум около 100 000 свечей за один запрос и молча обрезает
+   остальное - поэтому тянем историю порциями (пагинацией) через
+   copy_rates_from_pos, пока брокер не перестанет отдавать новые данные.
 3. Добавляет к каждой свече три варианта времени:
      time_server - как прислал брокер (числа "по часам сервера", это НЕ настоящий UTC)
      time_utc    - настоящее UTC (server - SERVER_UTC_OFFSET_HOURS)
@@ -18,7 +21,6 @@ SYMBOL и SERVER_UTC_OFFSET_HOURS в config.py - без них время буд
 
 import sys
 from pathlib import Path
-from datetime import datetime, timezone
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -29,6 +31,7 @@ except ImportError:
     print("Установите её командой:  pip install MetaTrader5")
     sys.exit(1)
 
+import numpy as np
 import pandas as pd
 import config
 
@@ -39,20 +42,37 @@ TIMEFRAMES = {
     "H1": mt5.TIMEFRAME_H1,
 }
 
+# Сколько свечей просить за один запрос. Держим с запасом ниже наблюдаемого
+# потолка API (~100 000), чтобы точно не попасть в скрытую обрезку.
+CHUNK_SIZE = 90_000
+# Защита от бесконечного цикла, если API вдруг начнёт бесконечно отдавать данные.
+MAX_CHUNKS = 200
+
 
 def fetch_one_timeframe(symbol: str, tf_name: str, tf_value: int) -> pd.DataFrame | None:
-    """Тянет всю доступную историю по одному таймфрейму и возвращает DataFrame с временем в 3 видах."""
+    """Тянет всю доступную историю по одному таймфрейму порциями и возвращает DataFrame с временем в 3 видах."""
 
-    # date_from нарочно очень ранняя - MT5 сам обрежет по реально доступной истории у брокера.
-    date_from = datetime(2000, 1, 1, tzinfo=timezone.utc)
-    date_to = datetime.now(timezone.utc)
+    # copy_rates_from_pos(symbol, tf, start_pos, count): start_pos=0 - самая свежая свеча,
+    # чем больше start_pos, тем дальше в прошлое. Каждый чанк возвращается в хронологическом
+    # порядке (старые -> новые), поэтому чанки нужно собрать в обратном порядке, чтобы
+    # получить единую хронологию от самой старой свечи к самой новой.
+    chunks = []
+    start_pos = 0
+    for _ in range(MAX_CHUNKS):
+        batch = mt5.copy_rates_from_pos(symbol, tf_value, start_pos, CHUNK_SIZE)
+        if batch is None or len(batch) == 0:
+            break
+        chunks.append(batch)
+        if len(batch) < CHUNK_SIZE:
+            break  # брокер отдал меньше, чем просили - значит история закончилась
+        start_pos += len(batch)
 
-    rates = mt5.copy_rates_range(symbol, tf_value, date_from, date_to)
-    if rates is None or len(rates) == 0:
+    if not chunks:
         print(f"  {tf_name}: данных нет ({mt5.last_error()})")
         return None
 
-    df = pd.DataFrame(rates)
+    rates = np.concatenate(chunks[::-1])
+    df = pd.DataFrame(rates).drop_duplicates(subset="time").sort_values("time").reset_index(drop=True)
 
     # "time" от MT5 - unix-время, но с цифрами часов сервера брокера (не настоящий UTC!).
     # Тот же нюанс мы уже видели в check_connection.py при сравнении тика с реальным UTC.
