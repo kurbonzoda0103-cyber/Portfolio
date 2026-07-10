@@ -1,5 +1,6 @@
-MetaTrader5
+pybit
 pandas
 numpy
 matplotlib
 pyarrow
+python-dotenv

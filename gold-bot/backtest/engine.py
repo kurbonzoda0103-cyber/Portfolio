@@ -1,13 +1,16 @@
 """
-Движок бэктеста: берёт исторические M15-свечи, для каждого торгового дня
-прогоняет стратегию внутри торгового окна (config.TRADING_WINDOW_START-
-TRADING_WINDOW_END), честно считает P&L с учётом спреда и комиссии, размер
-позиции - по риску 1% на сделку, с проверкой жёстких лимитов риск-менеджмента
-из config.py.
+Движок бэктеста для BTCUSDT на Bybit. В отличие от MT5-версии (окно 17:00-21:00,
+максимум 1 сделка в день, лоты) здесь позиции держатся, пока не сработает стоп
+или сигнал стратегии на выход - крипта торгуется 24/7, EMA trend-following по
+своей природе держит позицию, пока не развернётся тренд.
 
-Все сделки закрываются до конца торгового окна - переносов через ночь нет,
-поэтому своп (плата за перенос позиции) в расчётах не участвует - это
-соответствует правилу проекта "все позиции закрываются до конца окна".
+Размер позиции, проверка стопа и дневные лимиты - ВСЕГДА через risk_gate.py,
+движок сам ничего не считает по риску напрямую (см. risk_gate.py - там
+объяснено, почему это отдельный модуль, который стратегия не может обойти).
+
+Комиссия (taker) и funding считаются через risk_gate.compute_costs_usdt -
+funding начисляется, если позиция была открыта в момент 00:00/08:00/16:00 UTC
+(стандартное время начисления funding для большинства USDT-перпов на Bybit).
 """
 
 import sys
@@ -18,201 +21,115 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pandas as pd
 
-import config
-from backtest.strategies import Signal
+import risk_gate
+from backtest import strategies
 
-
-@dataclass
-class Instrument:
-    """Параметры конкретного инструмента - вынесены из движка, чтобы одна и та
-    же стратегия/движок могли гонять и золото, и, например, EURUSD без
-    копирования кода. Для золота значения берём из config.py (там они уже
-    измерены через bot/check_connection.py); для других инструментов - см.
-    комментарии в соответствующем run_backtest_*.py, что из них реально
-    измерено, а что пока приближение."""
-
-    point: float             # шаг цены (например, 0.01 у золота, 0.00001 у EURUSD с 5 знаками)
-    contract_size: float     # единиц базового актива на 1 лот
-    spread_points: float     # спред в пунктах - одно приближение, не факт на каждый час (см. README)
-    commission_per_lot_usd: float = 0.0
-
-
-GOLD = Instrument(
-    point=0.01,
-    contract_size=config.CONTRACT_SIZE,
-    spread_points=config.ASSUMED_SPREAD_POINTS,
-    commission_per_lot_usd=config.COMMISSION_PER_LOT_USD,
-)
+FUNDING_HOURS_UTC = {0, 8, 16}  # часы UTC начисления funding на Bybit (стандарт для большинства USDT-перпов)
 
 
 @dataclass
 class Trade:
-    date: object
     direction: str
     entry_time: pd.Timestamp
     entry_price: float
     exit_time: pd.Timestamp
     exit_price: float
     stop_price: float
-    take_profit_price: float
-    lot: float
-    gross_pnl_usd: float   # P&L без учёта спреда/комиссии - чтобы видеть, есть ли вообще сырой edge
-    cost_usd: float        # спред + комиссия за сделку
-    pnl_usd: float          # gross_pnl_usd - cost_usd
-    exit_reason: str  # "stop", "take_profit" или "window_close"
+    qty: float
+    gross_pnl_usdt: float
+    cost_usdt: float
+    pnl_usdt: float
+    exit_reason: str  # "stop" или "signal_exit"
+    funding_periods: int
 
 
-def is_news_blackout(ts_local: pd.Timestamp) -> bool:
-    """ts_local - локальное время (UTC+MY_TIMEZONE_OFFSET_HOURS). Список новостей в config.py - в UTC.
-
-    Список сейчас пуст (см. TODO в config.py) - функция готова к работе, но
-    реального эффекта на бэктест пока не даёт, пока список не заполнен.
-    """
-    if not config.NEWS_DATES_UTC:
-        return False
-    ts_utc = ts_local - pd.Timedelta(hours=config.MY_TIMEZONE_OFFSET_HOURS)
-    blackout = pd.Timedelta(minutes=config.NEWS_BLACKOUT_MINUTES)
-    for news_str in config.NEWS_DATES_UTC:
-        if abs(ts_utc - pd.Timestamp(news_str)) <= blackout:
-            return True
-    return False
+def count_funding_periods(entry_time: pd.Timestamp, exit_time: pd.Timestamp) -> int:
+    """Сколько раз позиция была открыта в момент начисления funding (00:00/08:00/16:00 UTC)."""
+    if exit_time <= entry_time:
+        return 0
+    hours = pd.date_range(entry_time.ceil("h"), exit_time, freq="1h")
+    return sum(1 for h in hours if h.hour in FUNDING_HOURS_UTC)
 
 
-def size_position(equity: float, entry_price: float, stop_price: float, instrument: Instrument) -> float:
-    """Лот от риска на сделку (config.RISK_PER_TRADE_PCT), с ограничением по
-    эффективному плечу (config.MAX_EFFECTIVE_LEVERAGE) и минимальному лоту.
-    Риск-лимиты - общие для всех инструментов (правила проекта), а вот
-    contract_size - специфика конкретного инструмента.
+def run_backtest(df: pd.DataFrame, starting_equity: float):
+    """df должен уже содержать колонки ema_fast/ema_slow/atr/cross
+    (см. strategies.add_ema_signals) и time_utc, отсортирован по времени.
 
-    Округляем ВНИЗ до шага MIN_LOT - округлять вверх нельзя, это превысит
-    разрешённый риск 1% на сделку.
-    """
-    risk_amount = equity * config.RISK_PER_TRADE_PCT / 100
-    stop_distance = abs(entry_price - stop_price)
-    if stop_distance <= 0:
-        return 0.0
-
-    lot = risk_amount / (stop_distance * instrument.contract_size)
-
-    max_lot_by_leverage = (config.MAX_EFFECTIVE_LEVERAGE * equity) / (entry_price * instrument.contract_size)
-    lot = min(lot, max_lot_by_leverage)
-
-    lot = (lot // config.MIN_LOT) * config.MIN_LOT
-    return max(0.0, round(lot, 2))
-
-
-def simulate_trade(
-    signal: Signal, day_bars: pd.DataFrame, equity: float, effective_end: pd.Timestamp, instrument: Instrument
-) -> Trade | None:
-    lot = size_position(equity, signal.entry_price, signal.stop_price, instrument)
-    if lot < config.MIN_LOT:
-        return None  # риск на минимальном лоте уже больше 1% - сделку не открываем
-
-    bars_after_entry = day_bars[day_bars["time_local"] > signal.entry_time]
-
-    exit_price = None
-    exit_time = None
-    exit_reason = None
-
-    for _, bar in bars_after_entry.iterrows():
-        if bar["time_local"] >= effective_end:
-            break
-
-        if signal.direction == "long":
-            if bar["low"] <= signal.stop_price:
-                exit_price, exit_reason = signal.stop_price, "stop"
-            elif bar["high"] >= signal.take_profit_price:
-                exit_price, exit_reason = signal.take_profit_price, "take_profit"
-        else:
-            if bar["high"] >= signal.stop_price:
-                exit_price, exit_reason = signal.stop_price, "stop"
-            elif bar["low"] <= signal.take_profit_price:
-                exit_price, exit_reason = signal.take_profit_price, "take_profit"
-
-        if exit_price is not None:
-            exit_time = bar["time_local"]
-            break
-
-    if exit_price is None:
-        # Не задело ни стоп, ни тейк - принудительно закрываем по правилу проекта
-        # "все позиции закрываются до конца окна".
-        before_end = day_bars[day_bars["time_local"] < effective_end]
-        if before_end.empty:
-            return None
-        last_bar = before_end.iloc[-1]
-        exit_price, exit_time, exit_reason = last_bar["close"], last_bar["time_local"], "window_close"
-
-    direction_sign = 1 if signal.direction == "long" else -1
-    gross_pnl = (exit_price - signal.entry_price) * direction_sign * instrument.contract_size * lot
-    # Спред считаем один раз за сделку (упрощение - нет отдельных bid/ask в истории,
-    # см. instrument.spread_points и предупреждение в README - это приближение,
-    # а не измеренный факт на каждый час торгового окна).
-    spread_cost = instrument.spread_points * instrument.point * instrument.contract_size * lot
-    commission_cost = instrument.commission_per_lot_usd * lot
-    cost = spread_cost + commission_cost
-    pnl_usd = gross_pnl - cost
-
-    return Trade(
-        date=signal.entry_time.date(),
-        direction=signal.direction,
-        entry_time=signal.entry_time,
-        entry_price=signal.entry_price,
-        exit_time=exit_time,
-        exit_price=exit_price,
-        stop_price=signal.stop_price,
-        take_profit_price=signal.take_profit_price,
-        lot=lot,
-        gross_pnl_usd=gross_pnl,
-        cost_usd=cost,
-        pnl_usd=pnl_usd,
-        exit_reason=exit_reason,
-    )
-
-
-def run_backtest(df: pd.DataFrame, starting_equity: float, signal_fn, instrument: Instrument = GOLD):
-    """Возвращает (список Trade, DataFrame кривой капитала).
-
-    signal_fn(day_bars, date) -> Signal | None - генерирует сигнал входа для
-    конкретного торгового дня. Движок не привязан ни к конкретной стратегии
-    (ORB, фильтр по тренду и т.д. передаются как обычная функция), ни к
-    конкретному инструменту (instrument задаёт point/contract_size/спред) -
-    чтобы не плодить копию всего движка под каждую новую идею или инструмент.
+    Возвращает (список Trade, DataFrame кривой капитала).
     """
 
     trades: list[Trade] = []
     equity = starting_equity
-    equity_curve = [{"date": None, "equity": equity}]
+    equity_curve = [{"time": df["time_utc"].iloc[0] if len(df) else None, "equity": equity}]
 
-    for date, day_df in df.groupby(df["time_local"].dt.date):
-        # Правило проекта: перед выходными позиции не держим и не открываем.
-        if pd.Timestamp(date).weekday() >= 5 and config.NO_POSITIONS_OVER_WEEKEND:
-            continue
+    daily_state = risk_gate.DailyState()
+    position = None  # None или dict с текущей открытой позицией
 
-        window_start = pd.Timestamp(f"{date} {config.TRADING_WINDOW_START}")
-        window_end_full = pd.Timestamp(f"{date} {config.TRADING_WINDOW_END}")
-        effective_end = window_end_full - config.FORCE_CLOSE_BEFORE_WINDOW_END
+    for _, bar in df.iterrows():
+        day = bar["time_utc"].date()
+        if daily_state.day != day:
+            daily_state.reset(day, equity)
 
-        if is_news_blackout(window_start) or is_news_blackout(effective_end):
-            continue
+        if position is not None:
+            hit_stop = (
+                position["direction"] == "long" and bar["low"] <= position["stop_price"]
+            ) or (
+                position["direction"] == "short" and bar["high"] >= position["stop_price"]
+            )
+            exit_by_signal = strategies.should_exit_by_signal(bar, position["direction"])
 
-        day_bars = day_df[(day_df["time_local"] >= window_start) & (day_df["time_local"] < effective_end)]
-        day_bars = day_bars.sort_values("time_local")
-        if day_bars.empty:
-            continue
+            if hit_stop or exit_by_signal:
+                exit_price = position["stop_price"] if hit_stop else bar["close"]
+                exit_reason = "stop" if hit_stop else "signal_exit"
 
-        # Лимиты MAX_LOSING_TRADES_PER_DAY / MAX_DAILY_LOSS_PCT сейчас не могут
-        # сработать - все текущие стратегии дают максимум 1 сделку в день.
-        # Оставлены здесь как каркас для будущих стратегий с несколькими входами.
-        signal = signal_fn(day_bars, date)
-        if signal is None:
-            continue
+                funding_periods = count_funding_periods(position["entry_time"], bar["time_utc"])
+                direction_sign = 1 if position["direction"] == "long" else -1
+                gross_pnl = (exit_price - position["entry_price"]) * direction_sign * position["qty"]
+                costs = risk_gate.compute_costs_usdt(
+                    position["qty"], position["entry_price"], exit_price, funding_periods
+                )
+                pnl = gross_pnl - costs["total_cost_usdt"]
 
-        trade = simulate_trade(signal, day_bars, equity, effective_end, instrument)
-        if trade is None:
-            continue
+                trades.append(
+                    Trade(
+                        direction=position["direction"],
+                        entry_time=position["entry_time"],
+                        entry_price=position["entry_price"],
+                        exit_time=bar["time_utc"],
+                        exit_price=exit_price,
+                        stop_price=position["stop_price"],
+                        qty=position["qty"],
+                        gross_pnl_usdt=gross_pnl,
+                        cost_usdt=costs["total_cost_usdt"],
+                        pnl_usdt=pnl,
+                        exit_reason=exit_reason,
+                        funding_periods=funding_periods,
+                    )
+                )
 
-        equity += trade.pnl_usd
-        trades.append(trade)
-        equity_curve.append({"date": date, "equity": equity})
+                equity += pnl
+                daily_state.register_trade_result(pnl)
+                equity_curve.append({"time": bar["time_utc"], "equity": equity})
+                position = None
+
+        # Проверяем вход даже сразу после закрытия на этом же баре - если EMA
+        # развернулись, trend-following логично сразу переворачивает позицию,
+        # а не ждёт следующего бара.
+        if position is None and risk_gate.can_trade_today(daily_state):
+            signal = strategies.entry_signal(bar)
+            if signal is not None:
+                try:
+                    qty = risk_gate.validate_order(equity, signal.entry_price, signal.stop_price, daily_state)
+                except risk_gate.OrderRejected:
+                    qty = None
+
+                if qty:
+                    position = {
+                        "direction": signal.direction,
+                        "entry_time": bar["time_utc"],
+                        "entry_price": signal.entry_price,
+                        "stop_price": signal.stop_price,
+                        "qty": qty,
+                    }
 
     return trades, pd.DataFrame(equity_curve)

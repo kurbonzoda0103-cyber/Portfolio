@@ -37,3 +37,6 @@ next-env.d.ts
 /gold-bot/logs/*.log
 /gold-bot/venv/
 /gold-bot/**/__pycache__/
+
+# gold-bot: секреты API - НИКОГДА не коммитить, только .env.example в git
+/gold-bot/.env

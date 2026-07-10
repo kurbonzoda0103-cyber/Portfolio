@@ -1,22 +1,14 @@
-"""Общая печать отчёта и сохранение результатов - переиспользуется разными
-скриптами запуска бэктеста (run_backtest.py, run_backtest_trend.py и т.д.),
-чтобы не дублировать одинаковую логику отчёта под каждую стратегию."""
+"""Печать отчёта и сохранение результатов бэктеста BTCUSDT (Bybit)."""
 
 from pathlib import Path
 
 import pandas as pd
 import matplotlib.pyplot as plt
 
-
-DEFAULT_SPREAD_NOTE = (
-    "ВАЖНО: спред взят из ОДНОГО вечернего замера ($0.52 на лот 0.01) - это\n"
-    "приближение, а не факт на каждый час торгового окна (config.py -> ASSUMED_SPREAD_POINTS)."
-)
+import risk_gate
 
 
-def print_report(
-    trades, equity_df: pd.DataFrame, starting_equity: float, title: str, spread_note: str = DEFAULT_SPREAD_NOTE
-):
+def print_report(trades, equity_df: pd.DataFrame, starting_equity: float, title: str):
     print("=" * 60)
     print(title)
     print("=" * 60)
@@ -24,14 +16,13 @@ def print_report(
 
     if not trades:
         print("\nНи одной сделки не было открыто за весь период.")
-        print("Возможные причины: сигнал ни разу не появился (например, пробой всегда")
-        print("шёл против тренда), слишком мало баров в окне, либо риск на минимальном")
-        print("лоте всегда превышал 1%.")
+        print("Возможные причины: EMA ни разу не пересеклись (маловероятно на 6+")
+        print("месяцах), либо риск на минимальном ордере всегда был меньше $5.")
         return
 
-    pnl = pd.Series([t.pnl_usd for t in trades])
-    gross_pnl = pd.Series([t.gross_pnl_usd for t in trades])
-    cost = pd.Series([t.cost_usd for t in trades])
+    pnl = pd.Series([t.pnl_usdt for t in trades])
+    gross_pnl = pd.Series([t.gross_pnl_usdt for t in trades])
+    cost = pd.Series([t.cost_usdt for t in trades])
     wins = pnl[pnl > 0]
     losses = pnl[pnl < 0]
 
@@ -55,27 +46,31 @@ def print_report(
 
     print()
     print("Разбивка на сырой сигнал и costs (чтобы понять, ЧТО убивает результат):")
-    print(f"  P&L ДО спреда/комиссии (сырой сигнал): ${gross_pnl.sum():+.2f}")
-    print(f"  Спред + комиссия за весь период:       ${-cost.sum():+.2f}")
-    print(f"  P&L ПОСЛЕ costов (итог выше):           ${pnl.sum():+.2f}")
+    print(f"  P&L ДО комиссии/funding (сырой сигнал): ${gross_pnl.sum():+.2f}")
+    print(f"  Комиссия + funding за весь период:       ${-cost.sum():+.2f}")
+    print(f"  P&L ПОСЛЕ costов (итог выше):             ${pnl.sum():+.2f}")
     if gross_pnl.sum() > 0:
-        print("  -> Сырой сигнал в плюсе - costы съедают прибыль. Стоит смотреть в сторону")
-        print("     меньшего числа/более качественных сделок, а не выбрасывать идею.")
+        print("  -> Сырой сигнал в плюсе - costы съедают прибыль.")
     else:
-        print("  -> Сырой сигнал УЖЕ в минусе, до всяких costов. Дело не в спреде -")
-        print("     у сигнала нет edge на этом инструменте/окне в таком виде.")
+        print("  -> Сырой сигнал УЖЕ в минусе, до всяких costов - дело не в комиссии/funding.")
 
     print(f"Макс. просадка:      {max_drawdown_pct:.1f}%")
 
     by_reason = pd.Series([t.exit_reason for t in trades]).value_counts()
     print(f"\nПричины закрытия сделок: {dict(by_reason)}")
 
+    avg_hold_hours = (
+        pd.Series([(t.exit_time - t.entry_time).total_seconds() / 3600 for t in trades]).mean()
+    )
+    print(f"Среднее время удержания позиции: {avg_hold_hours:.1f} ч")
+
     print()
-    print(spread_note)
-    print("Исторические новости (NFP/ФРС/CPI) сейчас НЕ исключены - config.py -> NEWS_DATES_UTC пуст.")
+    print("ВАЖНО: funding rate - ПРИБЛИЖЕНИЕ (см. risk_gate.ASSUMED_FUNDING_RATE_PER_8H),")
+    print("не измеренный факт для реального счёта. Комиссия 0.055% (taker) - официальная")
+    print("ставка Bybit, но реальная может отличаться по вашему уровню VIP/объёму.")
 
 
-def save_outputs(trades, equity_df: pd.DataFrame, out_dir: Path, plot_title: str, file_prefix: str):
+def save_outputs(trades, equity_df: pd.DataFrame, out_dir: Path, plot_title: str, file_prefix: str = "backtest"):
     out_dir = Path(out_dir)
 
     if trades:
@@ -91,7 +86,7 @@ def save_outputs(trades, equity_df: pd.DataFrame, out_dir: Path, plot_title: str
     plt.plot(range(len(equity_df)), equity_df["equity"])
     plt.title(plot_title)
     plt.xlabel("Сделка №")
-    plt.ylabel("Капитал, $")
+    plt.ylabel("Капитал, USDT")
     plt.tight_layout()
     out_path = plots_dir / f"{file_prefix}_equity_curve.png"
     plt.savefig(out_path, dpi=120)
