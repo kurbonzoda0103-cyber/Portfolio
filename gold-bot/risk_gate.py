@@ -47,8 +47,14 @@ class OrderRejected(Exception):
 
 @dataclass
 class DailyState:
-    """Состояние риска на текущий торговый день - сбрасывается в начале каждого
-    нового дня (используется и в бэктесте, и в живом боте одинаково)."""
+    """Состояние риска на текущий торговый день - ОБЩЕЕ на весь портфель (все
+    монеты сразу), не по одной монете. Сбрасывается в начале каждого нового
+    дня (используется и в бэктесте, и в живом боте одинаково).
+
+    open_notional_usdt - суммарный номинал ВСЕХ открытых позиций по ВСЕМ
+    монетам прямо сейчас. Нужен, чтобы MAX_EFFECTIVE_LEVERAGE ограничивал
+    портфель целиком, а не давал каждой монете своё собственное 5x - иначе
+    при 10 одновременных позициях реальный риск мог бы дойти до 50x депозита."""
 
     day: object = None
     start_of_day_equity: float = 0.0
@@ -56,6 +62,7 @@ class DailyState:
     realized_pnl_today: float = 0.0
     halted: bool = False
     halt_reason: str = ""
+    open_notional_usdt: float = 0.0
 
     def reset(self, day, equity: float):
         self.day = day
@@ -64,17 +71,19 @@ class DailyState:
         self.realized_pnl_today = 0.0
         self.halted = False
         self.halt_reason = ""
+        # open_notional_usdt НЕ сбрасываем - позиции могли остаться открытыми с предыдущего дня
 
     def register_trade_result(self, pnl_usdt: float):
-        """Вызывать после КАЖДОГО закрытия сделки - обновляет счётчики и,
-        если лимиты превышены, останавливает торговлю до конца дня."""
+        """Вызывать после КАЖДОГО закрытия сделки (по любой монете) - обновляет
+        счётчики и, если лимиты превышены, останавливает торговлю ПО ВСЕМУ
+        ПОРТФЕЛЮ до конца дня (не только по той монете, где случился убыток)."""
         self.realized_pnl_today += pnl_usdt
         if pnl_usdt < 0:
             self.losing_trades_today += 1
 
         if self.losing_trades_today >= MAX_LOSING_TRADES_PER_DAY:
             self.halted = True
-            self.halt_reason = f"{MAX_LOSING_TRADES_PER_DAY} убыточных сделки за день"
+            self.halt_reason = f"{MAX_LOSING_TRADES_PER_DAY} убыточных сделки за день (по всему портфелю)"
         elif self.realized_pnl_today <= -self.start_of_day_equity * DAILY_LOSS_LIMIT_PCT / 100:
             self.halted = True
             self.halt_reason = f"дневной лимит убытка {DAILY_LOSS_LIMIT_PCT}% от equity на начало дня достигнут"
@@ -84,10 +93,13 @@ def can_trade_today(daily_state: DailyState) -> bool:
     return not daily_state.halted
 
 
-def compute_position_size(equity_usdt: float, entry_price: float, stop_price: float | None) -> float:
-    """Размер позиции в BTC (qty), рассчитанный от риска на сделку, с
-    ограничением по эффективному плечу. Стоп-лосс ОБЯЗАТЕЛЕН - без него
-    функция сразу бросает исключение, а не считает "какой-нибудь" размер."""
+def compute_position_size(
+    equity_usdt: float, entry_price: float, stop_price: float | None, open_notional_usdt: float = 0.0
+) -> float:
+    """Размер позиции в базовой монете (BTC, ETH, ...), рассчитанный от риска
+    на сделку, с ограничением по ЭФФЕКТИВНОМУ ПЛЕЧУ ВСЕГО ПОРТФЕЛЯ (а не этой
+    одной монеты - см. open_notional_usdt в DailyState). Стоп-лосс ОБЯЗАТЕЛЕН -
+    без него функция сразу бросает исключение, а не считает "какой-нибудь" размер."""
 
     if stop_price is None:
         raise OrderRejected("Стоп-лосс обязателен - ордер без стопа не отправляется.")
@@ -99,7 +111,11 @@ def compute_position_size(equity_usdt: float, entry_price: float, stop_price: fl
     risk_amount_usdt = equity_usdt * RISK_PER_TRADE_PCT / 100
     qty = risk_amount_usdt / stop_distance
 
-    max_qty_by_leverage = (MAX_EFFECTIVE_LEVERAGE * equity_usdt) / entry_price
+    # Плечо ограничиваем на весь портфель: новая позиция не может увеличить
+    # суммарный номинал (уже открытые позиции по другим монетам + эта) выше
+    # MAX_EFFECTIVE_LEVERAGE * equity.
+    remaining_notional_budget = max(0.0, MAX_EFFECTIVE_LEVERAGE * equity_usdt - open_notional_usdt)
+    max_qty_by_leverage = remaining_notional_budget / entry_price
     qty = min(qty, max_qty_by_leverage)
 
     return qty
@@ -109,13 +125,15 @@ def validate_order(
     equity_usdt: float, entry_price: float, stop_price: float | None, daily_state: DailyState
 ) -> float:
     """ЕДИНСТВЕННЫЙ способ получить размер позиции для реального/бэктестового
-    ордера. Возвращает qty (BTC), если ордер разрешён; иначе бросает
-    OrderRejected с человекочитаемой причиной."""
+    ордера. Возвращает qty, если ордер разрешён; иначе бросает OrderRejected с
+    человекочитаемой причиной. daily_state.open_notional_usdt используется для
+    портфельного лимита плеча - вызывающий код должен обновлять его при
+    открытии/закрытии КАЖДОЙ позиции по КАЖДОЙ монете (см. backtest/engine.py)."""
 
     if not can_trade_today(daily_state):
         raise OrderRejected(f"Торговля на сегодня остановлена: {daily_state.halt_reason}")
 
-    qty = compute_position_size(equity_usdt, entry_price, stop_price)
+    qty = compute_position_size(equity_usdt, entry_price, stop_price, daily_state.open_notional_usdt)
     notional_usdt = qty * entry_price
 
     if notional_usdt < MIN_ORDER_USDT:

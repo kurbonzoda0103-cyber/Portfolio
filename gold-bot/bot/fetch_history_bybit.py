@@ -12,6 +12,8 @@ Bybit отдаёт максимум 1000 свечей за один запрос
     python bot\\fetch_history_bybit.py                  # config.SYMBOL, config.INTERVAL, максимум истории
     python bot\\fetch_history_bybit.py ETHUSDT           # другой символ
     python bot\\fetch_history_bybit.py BTCUSDT 60        # другой интервал (60 = 1H, "D" = 1 день)
+    python bot\\fetch_history_bybit.py TOP10             # все символы из data/top_symbols.txt
+                                                          # (сначала запустите bot\\top_symbols.py)
 """
 
 import sys
@@ -80,8 +82,25 @@ def fetch_klines(session, symbol: str, interval: str) -> pd.DataFrame | None:
     return df
 
 
+def fetch_and_save_one(session, symbol: str, interval: str, data_dir: Path) -> bool:
+    print(f"\n{symbol}: запрашиваю у биржи...")
+    df = fetch_klines(session, symbol, interval)
+    if df is None:
+        print(f"  {symbol}: данных не получено - проверьте название символа и интервал.")
+        return False
+
+    tf_name = f"M{interval}" if interval.isdigit() else interval
+    out_path = data_dir / f"{symbol}_{tf_name}.parquet"
+    df.to_parquet(out_path, index=False)
+
+    print(f"  Свечей: {len(df)}")
+    print(f"  Период (UTC): {df['time_utc'].min()} -> {df['time_utc'].max()}")
+    print(f"  Сохранено в: {out_path}")
+    return True
+
+
 def main():
-    symbol = sys.argv[1] if len(sys.argv) > 1 else config.SYMBOL
+    first_arg = sys.argv[1] if len(sys.argv) > 1 else config.SYMBOL
     interval = sys.argv[2] if len(sys.argv) > 2 else config.INTERVAL
 
     # Публичные данные - ключи не нужны. testnet=False всегда для истории цен:
@@ -89,26 +108,35 @@ def main():
     # реальные mainnet-данные (даже если торговать потом будем через demo/testnet).
     session = HTTP(testnet=False)
 
-    print("=" * 60)
-    print(f"Выгрузка истории {symbol}, интервал {interval}, с Bybit (публичные данные mainnet)")
-    print("=" * 60)
-
-    df = fetch_klines(session, symbol, interval)
-    if df is None:
-        print("Данных не получено - проверьте название символа и интервал.")
-        sys.exit(1)
-
     data_dir = Path(config.DATA_DIR)
     data_dir.mkdir(parents=True, exist_ok=True)
 
-    tf_name = f"M{interval}" if interval.isdigit() else interval
-    out_path = data_dir / f"{symbol}_{tf_name}.parquet"
-    df.to_parquet(out_path, index=False)
+    if first_arg.upper() == "TOP10":
+        symbols_path = data_dir / "top_symbols.txt"
+        if not symbols_path.exists():
+            print(f"Не найден {symbols_path}.")
+            print("Сначала запустите: python bot\\top_symbols.py")
+            sys.exit(1)
+        symbols = [s.strip() for s in symbols_path.read_text().splitlines() if s.strip()]
 
-    print(f"\nСвечей: {len(df)}")
-    print(f"Период (UTC):              {df['time_utc'].min()} -> {df['time_utc'].max()}")
-    print(f"Период (UTC+{config.MY_TIMEZONE_OFFSET_HOURS}, ваше время): {df['time_local'].min()} -> {df['time_local'].max()}")
-    print(f"Сохранено в: {out_path}")
+        print("=" * 60)
+        print(f"Выгрузка истории {len(symbols)} монет из top_symbols.txt, интервал {interval}")
+        print("=" * 60)
+
+        ok_count = 0
+        for symbol in symbols:
+            if fetch_and_save_one(session, symbol, interval, data_dir):
+                ok_count += 1
+
+        print(f"\nГотово: {ok_count}/{len(symbols)} монет успешно скачаны.")
+        return
+
+    print("=" * 60)
+    print(f"Выгрузка истории {first_arg}, интервал {interval}, с Bybit (публичные данные mainnet)")
+    print("=" * 60)
+
+    if not fetch_and_save_one(session, first_arg, interval, data_dir):
+        sys.exit(1)
 
 
 if __name__ == "__main__":

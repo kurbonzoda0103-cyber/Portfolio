@@ -1,16 +1,20 @@
 """
-Движок бэктеста для BTCUSDT на Bybit. В отличие от MT5-версии (окно 17:00-21:00,
-максимум 1 сделка в день, лоты) здесь позиции держатся, пока не сработает стоп
-или сигнал стратегии на выход - крипта торгуется 24/7, EMA trend-following по
-своей природе держит позицию, пока не развернётся тренд.
+Движок бэктеста для ПОРТФЕЛЯ монет на Bybit (топ-10 по объёму, независимые
+позиции по каждой монете, общий баланс и общие дневные риск-лимиты).
 
-Размер позиции, проверка стопа и дневные лимиты - ВСЕГДА через risk_gate.py,
-движок сам ничего не считает по риску напрямую (см. risk_gate.py - там
-объяснено, почему это отдельный модуль, который стратегия не может обойти).
+Каждая монета торгуется своей собственной EMA trend-following стратегией
+независимо, но:
+- equity (баланс) один общий на весь портфель;
+- дневные лимиты (2 убыточные сделки, -6% в день) считаются по ВСЕМ монетам
+  вместе - одна плохая монета может остановить торговлю по всем остальным
+  до конца дня;
+- эффективное плечо (5x) ограничивает СУММАРНЫЙ номинал открытых позиций по
+  всем монетам, а не каждую монету отдельно (см. risk_gate.py).
 
-Комиссия (taker) и funding считаются через risk_gate.compute_costs_usdt -
-funding начисляется, если позиция была открыта в момент 00:00/08:00/16:00 UTC
-(стандартное время начисления funding для большинства USDT-перпов на Bybit).
+Позиции держатся, пока не сработает стоп или сигнал стратегии на выход - без
+торгового окна, крипта торгуется 24/7.
+
+Размер позиции, проверка стопа и дневные лимиты - ВСЕГДА через risk_gate.py.
 """
 
 import sys
@@ -29,6 +33,7 @@ FUNDING_HOURS_UTC = {0, 8, 16}  # часы UTC начисления funding на
 
 @dataclass
 class Trade:
+    symbol: str
     direction: str
     entry_time: pd.Timestamp
     entry_price: float
@@ -51,24 +56,44 @@ def count_funding_periods(entry_time: pd.Timestamp, exit_time: pd.Timestamp) -> 
     return sum(1 for h in hours if h.hour in FUNDING_HOURS_UTC)
 
 
-def run_backtest(df: pd.DataFrame, starting_equity: float):
-    """df должен уже содержать колонки ema_fast/ema_slow/atr/cross
-    (см. strategies.add_ema_signals) и time_utc, отсортирован по времени.
+def _combine_symbols(symbol_dfs: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """Склеивает бары всех монет в один датафрейм, отсортированный по времени -
+    чтобы события по разным монетам обрабатывались в правильном хронологическом
+    порядке (это важно, т.к. equity и дневные лимиты общие на весь портфель)."""
+
+    parts = []
+    for symbol, df in symbol_dfs.items():
+        part = df.copy()
+        part["symbol"] = symbol
+        parts.append(part)
+
+    combined = pd.concat(parts, ignore_index=True)
+    return combined.sort_values(["time_utc", "symbol"]).reset_index(drop=True)
+
+
+def run_portfolio_backtest(symbol_dfs: dict[str, pd.DataFrame], starting_equity: float):
+    """symbol_dfs: {symbol: df}, каждый df уже должен быть подготовлен
+    strategies.add_ema_signals(...) заранее и содержать time_utc.
 
     Возвращает (список Trade, DataFrame кривой капитала).
     """
 
+    combined = _combine_symbols(symbol_dfs)
+
     trades: list[Trade] = []
     equity = starting_equity
-    equity_curve = [{"time": df["time_utc"].iloc[0] if len(df) else None, "equity": equity}]
+    equity_curve = [{"time": combined["time_utc"].iloc[0] if len(combined) else None, "equity": equity}]
 
     daily_state = risk_gate.DailyState()
-    position = None  # None или dict с текущей открытой позицией
+    positions: dict[str, dict] = {}  # symbol -> открытая позиция (максимум одна на монету одновременно)
 
-    for _, bar in df.iterrows():
+    for _, bar in combined.iterrows():
+        symbol = bar["symbol"]
         day = bar["time_utc"].date()
         if daily_state.day != day:
             daily_state.reset(day, equity)
+
+        position = positions.get(symbol)
 
         if position is not None:
             hit_stop = (
@@ -92,6 +117,7 @@ def run_backtest(df: pd.DataFrame, starting_equity: float):
 
                 trades.append(
                     Trade(
+                        symbol=symbol,
                         direction=position["direction"],
                         entry_time=position["entry_time"],
                         entry_price=position["entry_price"],
@@ -108,13 +134,14 @@ def run_backtest(df: pd.DataFrame, starting_equity: float):
                 )
 
                 equity += pnl
+                daily_state.open_notional_usdt -= position["notional_usdt"]
                 daily_state.register_trade_result(pnl)
                 equity_curve.append({"time": bar["time_utc"], "equity": equity})
+                del positions[symbol]
                 position = None
 
         # Проверяем вход даже сразу после закрытия на этом же баре - если EMA
-        # развернулись, trend-following логично сразу переворачивает позицию,
-        # а не ждёт следующего бара.
+        # развернулись, trend-following логично сразу переворачивает позицию.
         if position is None and risk_gate.can_trade_today(daily_state):
             signal = strategies.entry_signal(bar)
             if signal is not None:
@@ -124,12 +151,15 @@ def run_backtest(df: pd.DataFrame, starting_equity: float):
                     qty = None
 
                 if qty:
-                    position = {
+                    notional_usdt = qty * signal.entry_price
+                    positions[symbol] = {
                         "direction": signal.direction,
                         "entry_time": bar["time_utc"],
                         "entry_price": signal.entry_price,
                         "stop_price": signal.stop_price,
                         "qty": qty,
+                        "notional_usdt": notional_usdt,
                     }
+                    daily_state.open_notional_usdt += notional_usdt
 
     return trades, pd.DataFrame(equity_curve)

@@ -1,11 +1,9 @@
-"""Печать отчёта и сохранение результатов бэктеста BTCUSDT (Bybit)."""
+"""Печать отчёта и сохранение результатов портфельного бэктеста (Bybit, топ-N монет)."""
 
 from pathlib import Path
 
 import pandas as pd
 import matplotlib.pyplot as plt
-
-import risk_gate
 
 
 def print_report(trades, equity_df: pd.DataFrame, starting_equity: float, title: str):
@@ -37,7 +35,7 @@ def print_report(trades, equity_df: pd.DataFrame, starting_equity: float, title:
 
     print(f"Конечный капитал:    ${final_equity:.2f}")
     print(f"Итоговая доходность: {total_return_pct:+.1f}%")
-    print(f"Всего сделок:        {len(pnl)}")
+    print(f"Всего сделок:        {len(pnl)} (по {pd.Series([t.symbol for t in trades]).nunique()} монетам)")
     print(f"  из них прибыльных: {len(wins)} ({win_rate:.1f}%)")
     print(f"  из них убыточных:  {len(losses)}")
     pf_str = f"{profit_factor:.2f}" if profit_factor != float("inf") else "inf (убыточных сделок не было)"
@@ -59,10 +57,16 @@ def print_report(trades, equity_df: pd.DataFrame, starting_equity: float, title:
     by_reason = pd.Series([t.exit_reason for t in trades]).value_counts()
     print(f"\nПричины закрытия сделок: {dict(by_reason)}")
 
-    avg_hold_hours = (
-        pd.Series([(t.exit_time - t.entry_time).total_seconds() / 3600 for t in trades]).mean()
-    )
+    avg_hold_hours = pd.Series([(t.exit_time - t.entry_time).total_seconds() / 3600 for t in trades]).mean()
     print(f"Среднее время удержания позиции: {avg_hold_hours:.1f} ч")
+
+    print()
+    print("Разбивка по монетам (сколько каждая внесла в итог, отсортировано по P&L):")
+    by_symbol = pd.DataFrame(
+        {"symbol": [t.symbol for t in trades], "pnl": [t.pnl_usdt for t in trades]}
+    ).groupby("symbol")["pnl"].agg(["sum", "count"]).sort_values("sum", ascending=False)
+    for symbol, row in by_symbol.iterrows():
+        print(f"  {symbol:12s}  P&L ${row['sum']:+8.2f}   сделок: {int(row['count'])}")
 
     print()
     print("ВАЖНО: funding rate - ПРИБЛИЖЕНИЕ (см. risk_gate.ASSUMED_FUNDING_RATE_PER_8H),")
