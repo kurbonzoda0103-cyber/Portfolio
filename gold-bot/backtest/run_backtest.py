@@ -144,6 +144,30 @@ STRATEGIES = {
         "entry": strategies.adx_vol_filtered_bollinger_entry_signal,
         "exit": strategies.bollinger_should_exit,
     },
+    "Mean-reversion + ADX ranging (H1)": {
+        # Модификация 6: подтверждённая на M15 идея (Боллинджер 20/2.0 + ADX
+        # ranging), но на H1 - реже сделки, каждая крупнее относительно
+        # фиксированных costов. H1 сам по себе (без ADX-фильтра) не помог -
+        # проверяем именно комбинацию, а не таймфрейм в отрыве от фильтра.
+        "prepare": strategies.add_h1_adx_filtered_bollinger_signals,
+        "entry": strategies.adx_filtered_bollinger_entry_signal,
+        "exit": strategies.bollinger_should_exit,
+    },
+    "Mean-reversion + ADX ranging + асимметричный exit": {
+        # Модификация 7: та же база (20/2.0 + ADX ranging), но выход раньше -
+        # на 70% пути к средней, а не после полного возврата (см.
+        # strategies.bollinger_partial_should_exit).
+        "prepare": strategies.add_adx_filtered_bollinger_signals,
+        "entry": strategies.adx_filtered_bollinger_entry_signal,
+        "exit": strategies.bollinger_partial_should_exit,
+    },
+    "Mean-reversion + ADX ranging (H1) + асимметричный exit": {
+        # Модификация 8: комбинация 6 и 7 сразу - оба таймфрейм и выход меняем
+        # одновременно, чтобы не терять время на два отдельных прогона.
+        "prepare": strategies.add_h1_adx_filtered_bollinger_signals,
+        "entry": strategies.adx_filtered_bollinger_entry_signal,
+        "exit": strategies.bollinger_partial_should_exit,
+    },
 }
 
 

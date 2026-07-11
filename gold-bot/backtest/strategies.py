@@ -309,3 +309,37 @@ def adx_vol_filtered_bollinger_entry_signal(bar: pd.Series) -> Signal | None:
     if pd.isna(bar.get("bb_width_median")) or bar["bb_width_pct"] <= bar["bb_width_median"]:
         return None
     return adx_filtered_bollinger_entry_signal(bar)
+
+
+# ---------------------------------------------------------------------------
+# 8. Асимметричный выход: не ждать ПОЛНОГО возврата к средней линии (bb_mid),
+#    а фиксировать прибыль раньше - на BB_PARTIAL_EXIT_FRACTION пути от входа
+#    до средней. Гипотеза: часть сделок разворачивается обратно НЕ ДОЙДЯ до
+#    полной средней и уходит в стоп, пока мы ждём цель, которая была рядом.
+#    Более раннее закрытие даёт меньший gross с выигрышной сделки, но может
+#    спасать часть тех, что иначе стали бы убыточными - проверяем баланс на
+#    истории, а не предполагаем результат заранее.
+# ---------------------------------------------------------------------------
+BB_PARTIAL_EXIT_FRACTION = 0.7  # доля пути от нижней/верхней полосы до средней, после которой фиксируем выход
+
+
+def bollinger_partial_should_exit(bar: pd.Series, direction: str) -> bool:
+    if pd.isna(bar["bb_mid"]) or pd.isna(bar["bb_lower"]) or pd.isna(bar["bb_upper"]):
+        return False
+    if direction == "long":
+        target = bar["bb_lower"] + BB_PARTIAL_EXIT_FRACTION * (bar["bb_mid"] - bar["bb_lower"])
+        return bar["close"] >= target
+    target = bar["bb_upper"] - BB_PARTIAL_EXIT_FRACTION * (bar["bb_upper"] - bar["bb_mid"])
+    return bar["close"] <= target
+
+
+# ---------------------------------------------------------------------------
+# 9. Mean-reversion + ADX ranging на H1 (ресемплинг M15, доп. данные не нужны) -
+#    сама по себе H1-mean-reversion без ADX-фильтра не помогла (см. вариант
+#    "Mean-reversion H1"), но там не было фильтра БОКОВОГО рынка - проверяем,
+#    работает ли комбинация, доказавшая себя на M15, на более крупном таймфрейме.
+# ---------------------------------------------------------------------------
+def add_h1_adx_filtered_bollinger_signals(
+    df: pd.DataFrame, period: int = BB_PERIOD, std_mult: float = BB_STD_MULT
+) -> pd.DataFrame:
+    return add_adx_filtered_bollinger_signals(resample_to_h1(df), period=period, std_mult=std_mult)
