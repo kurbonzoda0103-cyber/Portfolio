@@ -55,23 +55,60 @@ def load_symbol_data(symbols: list[str]) -> dict[str, pd.DataFrame]:
     return symbol_dfs
 
 
+def align_to_common_window(symbol_dfs: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+    """Обрезает все монеты до ОБЩЕГО пересекающегося периода (макс. из всех
+    "начал" -> мин. из всех "концов"). Без этого монеты с долгой историей
+    (BTC, ETH - годы) торговались бы годами В ОДИНОЧКУ, пока более новые
+    листинги (например, недавно добавленные на Bybit) ещё не существовали -
+    и если этот "одиночный" период оказался бы убыточным, общий капитал мог
+    бы обвалиться до нуля ещё до того, как остальные монеты вообще получили
+    бы шанс поторговать. Индикаторы (EMA/ATR) считаются ДО обрезки на полной
+    истории каждой монеты, чтобы в начале общего окна они были уже "разогреты",
+    а не начинали заново с NaN."""
+
+    common_start = max(df["time_utc"].min() for df in symbol_dfs.values())
+    common_end = min(df["time_utc"].max() for df in symbol_dfs.values())
+
+    if common_start >= common_end:
+        print("ОШИБКА: у монет нет общего периода истории - слишком разные даты листинга.")
+        sys.exit(1)
+
+    print(f"Общий период для всех монет: {common_start} -> {common_end} "
+          f"(~{(common_end - common_start).days / 30:.1f} мес.)")
+
+    aligned = {}
+    for symbol, df in symbol_dfs.items():
+        trimmed = df[(df["time_utc"] >= common_start) & (df["time_utc"] <= common_end)].reset_index(drop=True)
+        if trimmed.empty:
+            print(f"  {symbol}: после обрезки на общий период данных не осталось - исключаю из бэктеста.")
+            continue
+        aligned[symbol] = trimmed
+
+    return aligned
+
+
 def main():
     symbols = load_symbol_list()
     print(f"Монеты в портфеле ({len(symbols)}): {', '.join(symbols)}\n")
 
     symbol_dfs = load_symbol_data(symbols)
 
-    min_days = min(
-        (df["time_utc"].max() - df["time_utc"].min()).days for df in symbol_dfs.values()
-    )
-    print(f"Данные загружены для {len(symbol_dfs)}/{len(symbols)} монет, "
-          f"кратчайшая история: {min_days} дней (~{min_days / 30:.1f} мес.)")
-    if min_days < 180:
-        print("ВНИМАНИЕ: у минимум одной монеты истории меньше 6 месяцев - для честной")
-        print("проверки стратегии рекомендуется минимум 180 дней по каждой монете.")
+    print("Глубина истории по каждой монете (до выравнивания):")
+    for symbol, df in symbol_dfs.items():
+        print(f"  {symbol:14s} {df['time_utc'].min()} -> {df['time_utc'].max()}")
     print()
 
     symbol_dfs = {symbol: strategies.add_ema_signals(df) for symbol, df in symbol_dfs.items()}
+    symbol_dfs = align_to_common_window(symbol_dfs)
+
+    common_days = (
+        min(df["time_utc"].max() for df in symbol_dfs.values())
+        - max(df["time_utc"].min() for df in symbol_dfs.values())
+    ).days
+    if common_days < 180:
+        print("\nВНИМАНИЕ: общий период короче 6 месяцев - для честной проверки стратегии")
+        print("рекомендуется минимум 180 дней. Продолжаю с тем, что есть.")
+    print()
 
     trades, equity_df = run_portfolio_backtest(symbol_dfs, risk_gate.STARTING_BALANCE_USDT)
 
