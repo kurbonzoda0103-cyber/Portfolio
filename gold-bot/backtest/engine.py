@@ -155,7 +155,14 @@ def run_portfolio_backtest(
 
         # Проверяем вход даже сразу после закрытия на этом же баре - если EMA
         # развернулись, trend-following логично сразу переворачивает позицию.
-        if position is None and risk_gate.can_trade_today(daily_state):
+        # has_reached_daily_trade_quota - это не риск-лимит, а осознанная
+        # селективность (пара сделок в день по всему портфелю, не любой сигнал
+        # по любой из монет) - см. risk_gate.MAX_NEW_POSITIONS_PER_DAY.
+        if (
+            position is None
+            and risk_gate.can_trade_today(daily_state)
+            and not risk_gate.has_reached_daily_trade_quota(daily_state)
+        ):
             signal = entry_signal_fn(bar)
             if signal is not None:
                 try:
@@ -164,6 +171,7 @@ def run_portfolio_backtest(
                     qty = None
 
                 if qty:
+                    daily_state.new_positions_today += 1
                     notional_usdt = qty * signal.entry_price
                     positions[symbol] = {
                         "direction": signal.direction,

@@ -27,6 +27,12 @@ MAX_LOSING_TRADES_PER_DAY = 2     # после стольких убыточны
 
 MIN_ORDER_USDT = 5.0              # минимальный размер ордера на Bybit (примерно; уточняется у биржи для конкретного инструмента)
 
+# Это НЕ защитный риск-лимит (не про убытки), а осознанный выбор селективности:
+# Али важно совершать пару качественных сделок в день по всему портфелю, а не
+# заходить в каждый сигнал по каждой из 8 монет. Ограничивает число НОВЫХ
+# позиций за день - остальные сигналы в этот день просто пропускаются.
+MAX_NEW_POSITIONS_PER_DAY = 2
+
 TAKER_FEE_PCT = 0.055 / 100       # комиссия taker (вход и выход - оба маркет-ордера в бэктесте)
 
 # ПРИБЛИЖЕНИЕ, не измеренный факт: типичный funding rate для BTCUSDT perpetual
@@ -63,6 +69,7 @@ class DailyState:
     halted: bool = False
     halt_reason: str = ""
     open_notional_usdt: float = 0.0
+    new_positions_today: int = 0
 
     def reset(self, day, equity: float):
         self.day = day
@@ -71,6 +78,7 @@ class DailyState:
         self.realized_pnl_today = 0.0
         self.halted = False
         self.halt_reason = ""
+        self.new_positions_today = 0
         # open_notional_usdt НЕ сбрасываем - позиции могли остаться открытыми с предыдущего дня
 
     def register_trade_result(self, pnl_usdt: float):
@@ -90,7 +98,16 @@ class DailyState:
 
 
 def can_trade_today(daily_state: DailyState) -> bool:
+    """Разрешена ли торговля вообще (риск-лимиты не нарушены). Не путать с
+    has_reached_daily_trade_quota - это про убытки, а квота про селективность."""
     return not daily_state.halted
+
+
+def has_reached_daily_trade_quota(daily_state: DailyState) -> bool:
+    """True, если на сегодня уже открыто MAX_NEW_POSITIONS_PER_DAY новых
+    позиций - остальные сигналы в этот день пропускаются, даже если риск-лимиты
+    не нарушены. Это выбор селективности (пара сделок в день), а не защита от убытков."""
+    return daily_state.new_positions_today >= MAX_NEW_POSITIONS_PER_DAY
 
 
 def compute_position_size(

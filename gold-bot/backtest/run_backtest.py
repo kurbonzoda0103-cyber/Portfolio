@@ -118,6 +118,14 @@ STRATEGIES = {
         "entry": strategies.bollinger_entry_signal,
         "exit": strategies.bollinger_should_exit,
     },
+    "Mean-reversion + ADX ranging (Боллинджер)": {
+        # Модификация 3: mean-reversion обычно работает в боковике - отсекаем
+        # сильный тренд (ADX > 20), а не подгоняем параметры полос (это уже
+        # пробовали, не помогло) - фильтруем именно РЕЖИМ рынка.
+        "prepare": strategies.add_adx_filtered_bollinger_signals,
+        "entry": strategies.adx_filtered_bollinger_entry_signal,
+        "exit": strategies.bollinger_should_exit,
+    },
 }
 
 

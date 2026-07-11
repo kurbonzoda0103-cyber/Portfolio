@@ -229,12 +229,12 @@ def bollinger_should_exit(bar: pd.Series, direction: str) -> bool:
 #    где EMA-пересечения обычно случайный шум, а не начало настоящего тренда.
 # ---------------------------------------------------------------------------
 ADX_PERIOD = 14
-ADX_THRESHOLD = 25  # ADX выше этого значения - рынок считается трендовым
+ADX_TREND_THRESHOLD = 25    # ADX выше этого значения - рынок считается трендовым (для EMA)
+ADX_RANGING_THRESHOLD = 20  # ADX НИЖЕ этого значения - рынок считается боковым (для mean-reversion)
 
 
-def add_adx_filtered_ema_signals(df: pd.DataFrame) -> pd.DataFrame:
-    df = add_ema_signals(df)
-
+def _adx(df: pd.DataFrame, period: int = ADX_PERIOD) -> pd.Series:
+    """df должен уже содержать колонку 'atr' (см. _atr выше)."""
     up_move = df["high"].diff()
     down_move = -df["low"].diff()
     plus_dm = pd.Series(0.0, index=df.index)
@@ -243,15 +243,38 @@ def add_adx_filtered_ema_signals(df: pd.DataFrame) -> pd.DataFrame:
     minus_dm[(down_move > up_move) & (down_move > 0)] = down_move
 
     atr = df["atr"].replace(0, pd.NA)
-    plus_di = 100 * plus_dm.ewm(alpha=1 / ADX_PERIOD, adjust=False).mean() / atr
-    minus_di = 100 * minus_dm.ewm(alpha=1 / ADX_PERIOD, adjust=False).mean() / atr
+    plus_di = 100 * plus_dm.ewm(alpha=1 / period, adjust=False).mean() / atr
+    minus_di = 100 * minus_dm.ewm(alpha=1 / period, adjust=False).mean() / atr
     dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di)
-    df["adx"] = dx.ewm(alpha=1 / ADX_PERIOD, adjust=False).mean()
+    return dx.ewm(alpha=1 / period, adjust=False).mean()
 
+
+def add_adx_filtered_ema_signals(df: pd.DataFrame) -> pd.DataFrame:
+    df = add_ema_signals(df)
+    df["adx"] = _adx(df)
     return df
 
 
 def adx_filtered_ema_entry_signal(bar: pd.Series) -> Signal | None:
-    if pd.isna(bar.get("adx")) or bar["adx"] < ADX_THRESHOLD:
+    if pd.isna(bar.get("adx")) or bar["adx"] < ADX_TREND_THRESHOLD:
         return None
     return ema_entry_signal(bar)
+
+
+# ---------------------------------------------------------------------------
+# 6. Mean-reversion (Боллинджер) + фильтр БОКОВОГО рынка по ADX - обратная
+#    логика идее 5: mean-reversion обычно работает в боковике, а в сильном
+#    тренде "дешёвая" цена может продолжить дешеветь дальше, а не откатить.
+#    Не подгонка параметров Боллинджера (это мы уже пробовали, не помогло) -
+#    отсекаем именно РЕЖИМ рынка, где сама идея разворота уместна.
+# ---------------------------------------------------------------------------
+def add_adx_filtered_bollinger_signals(df: pd.DataFrame) -> pd.DataFrame:
+    df = add_bollinger_signals(df)
+    df["adx"] = _adx(df)
+    return df
+
+
+def adx_filtered_bollinger_entry_signal(bar: pd.Series) -> Signal | None:
+    if pd.isna(bar.get("adx")) or bar["adx"] > ADX_RANGING_THRESHOLD:
+        return None
+    return bollinger_entry_signal(bar)
