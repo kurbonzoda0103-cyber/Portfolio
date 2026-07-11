@@ -1,6 +1,0 @@
-pybit
-pandas
-numpy
-matplotlib
-pyarrow
-python-dotenv
