@@ -70,8 +70,8 @@ def print_report(trades, equity_df: pd.DataFrame, starting_equity: float, title:
 
     print()
     print("ВАЖНО: funding rate - ПРИБЛИЖЕНИЕ (см. risk_gate.ASSUMED_FUNDING_RATE_PER_8H),")
-    print("не измеренный факт для реального счёта. Комиссия 0.055% (taker) - официальная")
-    print("ставка Bybit, но реальная может отличаться по вашему уровню VIP/объёму.")
+    print("не измеренный факт для реального счёта. Комиссия 0.09% (taker) - измерена на")
+    print("реальном счету Али (со скидкой MNT 10%) - изменится, если скидка отключится.")
 
 
 def save_outputs(trades, equity_df: pd.DataFrame, out_dir: Path, plot_title: str, file_prefix: str = "backtest"):

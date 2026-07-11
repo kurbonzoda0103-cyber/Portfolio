@@ -36,7 +36,7 @@ import pandas as pd
 import risk_gate
 
 SPOT_TAKER_FEE_PCT = 0.10 / 100  # типичная комиссия Bybit spot taker - ПРИБЛИЖЕНИЕ, не измерено на вашем счету
-PERP_TAKER_FEE_PCT = risk_gate.TAKER_FEE_PCT  # 0.055%, официальная ставка Bybit (та же, что у направленных стратегий)
+PERP_TAKER_FEE_PCT = risk_gate.TAKER_FEE_PCT  # 0.09%, измерено на реальном счету Али (та же, что у направленных стратегий)
 
 ENTRY_FUNDING_THRESHOLD = 0.0003  # входим, если funding rate за период > 0.03% - должен окупить round-trip costы
 EXIT_FUNDING_THRESHOLD = 0.0      # выходим (закрываем обе ноги), если funding падает до нуля/отрицательный
