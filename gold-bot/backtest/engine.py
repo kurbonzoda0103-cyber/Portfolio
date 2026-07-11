@@ -26,7 +26,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pandas as pd
 
 import risk_gate
-from backtest import strategies
 
 FUNDING_HOURS_UTC = {0, 8, 16}  # часы UTC начисления funding на Bybit (стандарт для большинства USDT-перпов)
 
@@ -71,9 +70,23 @@ def _combine_symbols(symbol_dfs: dict[str, pd.DataFrame]) -> pd.DataFrame:
     return combined.sort_values(["time_utc", "symbol"]).reset_index(drop=True)
 
 
-def run_portfolio_backtest(symbol_dfs: dict[str, pd.DataFrame], starting_equity: float):
-    """symbol_dfs: {symbol: df}, каждый df уже должен быть подготовлен
-    strategies.add_ema_signals(...) заранее и содержать time_utc.
+def run_portfolio_backtest(
+    symbol_dfs: dict[str, pd.DataFrame],
+    starting_equity: float,
+    entry_signal_fn,
+    should_exit_fn,
+):
+    """symbol_dfs: {symbol: df}, каждый df уже должен содержать все колонки,
+    нужные entry_signal_fn/should_exit_fn (см. strategies.py - там разные
+    стратегии готовят разные колонки: ema_fast/ema_slow/atr/cross для
+    EMA-тренда, donchian_high/low для пробоя и т.д.), и колонку time_utc.
+
+    entry_signal_fn(bar) -> Signal | None
+    should_exit_fn(bar, direction) -> bool
+
+    Движок не привязан к конкретной стратегии - разные идеи (EMA-тренд,
+    пробой диапазона, mean-reversion, ADX-фильтр) передаются как обычные
+    функции, чтобы не плодить копию всего движка под каждую.
 
     Возвращает (список Trade, DataFrame кривой капитала).
     """
@@ -101,7 +114,7 @@ def run_portfolio_backtest(symbol_dfs: dict[str, pd.DataFrame], starting_equity:
             ) or (
                 position["direction"] == "short" and bar["high"] >= position["stop_price"]
             )
-            exit_by_signal = strategies.should_exit_by_signal(bar, position["direction"])
+            exit_by_signal = should_exit_fn(bar, position["direction"])
 
             if hit_stop or exit_by_signal:
                 exit_price = position["stop_price"] if hit_stop else bar["close"]
@@ -143,7 +156,7 @@ def run_portfolio_backtest(symbol_dfs: dict[str, pd.DataFrame], starting_equity:
         # Проверяем вход даже сразу после закрытия на этом же баре - если EMA
         # развернулись, trend-following логично сразу переворачивает позицию.
         if position is None and risk_gate.can_trade_today(daily_state):
-            signal = strategies.entry_signal(bar)
+            signal = entry_signal_fn(bar)
             if signal is not None:
                 try:
                     qty = risk_gate.validate_order(equity, signal.entry_price, signal.stop_price, daily_state)

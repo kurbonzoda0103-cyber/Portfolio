@@ -1,16 +1,22 @@
 """
-Этап 3: портфельный бэктест EMA trend-following на топ-10 монет Bybit по
-объёму (не одна BTCUSDT), минимум 6 месяцев истории на каждую.
+Этап 3: сравнение 5 разных стратегий на портфеле монет. EMA trend-following
+сама по себе не сработала - сырой сигнал был в минусе на ВСЕХ монетах портфеля
+(см. README/CLAUDE.md). Перебираем принципиально разные идеи вместо того,
+чтобы крутить параметры одной и той же - это защита от переподгонки.
 
-Не требует API-ключей и подключения к Bybit - работает с
-data/{SYMBOL}_M{INTERVAL}.parquet для каждой монеты из data/top_symbols.txt,
-скачанными заранее:
+Стратегии:
+1. EMA trend (база) - уже проверена и убыточна, оставлена для сравнения
+2. EMA + фильтр тренда H1 (H1 считается ресемплингом из тех же M15-данных)
+3. Пробой канала Дончиана (20 баров)
+4. Mean-reversion от полос Боллинджера (20, 2 std)
+5. EMA + фильтр силы тренда ADX (> 25)
+
+Не требует API-ключей - работает с уже скачанными data/*.parquet:
     python bot\\top_symbols.py
     python bot\\fetch_history_bybit.py TOP10
 
-Общий баланс и общие дневные риск-лимиты на весь портфель - см. risk_gate.py.
-Честно печатает результат, включая отрицательный - подгонять параметры под
-красивую кривую доходности не будем.
+Честно печатает результат по каждой стратегии, включая отрицательный -
+подгонять параметры под красивую кривую доходности не будем.
 """
 
 import sys
@@ -24,7 +30,6 @@ import config
 import risk_gate
 from backtest.engine import run_portfolio_backtest
 from backtest import strategies
-from backtest.report import print_report, save_outputs
 
 
 def load_symbol_list() -> list[str]:
@@ -36,90 +41,133 @@ def load_symbol_list() -> list[str]:
     return [s.strip() for s in path.read_text().splitlines() if s.strip()]
 
 
-def load_symbol_data(symbols: list[str]) -> dict[str, pd.DataFrame]:
+def load_raw_data(symbols: list[str]) -> dict[str, pd.DataFrame]:
     tf_name = f"M{config.INTERVAL}" if config.INTERVAL.isdigit() else config.INTERVAL
     data_dir = Path(config.DATA_DIR)
 
-    symbol_dfs = {}
+    raw = {}
     for symbol in symbols:
         path = data_dir / f"{symbol}_{tf_name}.parquet"
         if not path.exists():
             print(f"  {symbol}: нет файла {path} - пропускаю (запустите bot\\fetch_history_bybit.py TOP10).")
             continue
-        symbol_dfs[symbol] = pd.read_parquet(path)
+        raw[symbol] = pd.read_parquet(path)
 
-    if not symbol_dfs:
+    if not raw:
         print("Ни одной монеты с данными не найдено. Сначала скачайте историю.")
         sys.exit(1)
+    return raw
 
-    return symbol_dfs
 
-
-def align_to_common_window(symbol_dfs: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
-    """Обрезает все монеты до ОБЩЕГО пересекающегося периода (макс. из всех
-    "начал" -> мин. из всех "концов"). Без этого монеты с долгой историей
-    (BTC, ETH - годы) торговались бы годами В ОДИНОЧКУ, пока более новые
-    листинги (например, недавно добавленные на Bybit) ещё не существовали -
-    и если этот "одиночный" период оказался бы убыточным, общий капитал мог
-    бы обвалиться до нуля ещё до того, как остальные монеты вообще получили
-    бы шанс поторговать. Индикаторы (EMA/ATR) считаются ДО обрезки на полной
-    истории каждой монеты, чтобы в начале общего окна они были уже "разогреты",
-    а не начинали заново с NaN."""
+def align_to_common_window(symbol_dfs: dict[str, pd.DataFrame]):
+    """Обрезает все монеты до ОБЩЕГО пересекающегося периода - иначе монеты с
+    долгой историей торговались бы годами в одиночку, пока более новые
+    листинги ещё не существовали (см. коммит с этим исправлением)."""
 
     common_start = max(df["time_utc"].min() for df in symbol_dfs.values())
     common_end = min(df["time_utc"].max() for df in symbol_dfs.values())
 
-    if common_start >= common_end:
-        print("ОШИБКА: у монет нет общего периода истории - слишком разные даты листинга.")
-        sys.exit(1)
-
-    print(f"Общий период для всех монет: {common_start} -> {common_end} "
-          f"(~{(common_end - common_start).days / 30:.1f} мес.)")
-
     aligned = {}
     for symbol, df in symbol_dfs.items():
         trimmed = df[(df["time_utc"] >= common_start) & (df["time_utc"] <= common_end)].reset_index(drop=True)
-        if trimmed.empty:
-            print(f"  {symbol}: после обрезки на общий период данных не осталось - исключаю из бэктеста.")
-            continue
-        aligned[symbol] = trimmed
+        if not trimmed.empty:
+            aligned[symbol] = trimmed
+    return aligned, common_start, common_end
 
-    return aligned
+
+STRATEGIES = {
+    "EMA trend (база)": {
+        "prepare": strategies.add_ema_signals,
+        "entry": strategies.ema_entry_signal,
+        "exit": strategies.ema_should_exit,
+    },
+    "EMA + фильтр H1": {
+        "prepare": lambda df: strategies.add_h1_trend_filter(strategies.add_ema_signals(df)),
+        "entry": strategies.h1_trend_ema_entry_signal,
+        "exit": strategies.ema_should_exit,
+    },
+    "Пробой Дончиана": {
+        "prepare": strategies.add_donchian_signals,
+        "entry": strategies.donchian_entry_signal,
+        "exit": strategies.donchian_should_exit,
+    },
+    "Mean-reversion (Боллинджер)": {
+        "prepare": strategies.add_bollinger_signals,
+        "entry": strategies.bollinger_entry_signal,
+        "exit": strategies.bollinger_should_exit,
+    },
+    "EMA + фильтр ADX": {
+        "prepare": strategies.add_adx_filtered_ema_signals,
+        "entry": strategies.adx_filtered_ema_entry_signal,
+        "exit": strategies.ema_should_exit,
+    },
+}
+
+
+def summarize(trades, equity_df, starting_equity: float) -> dict:
+    if not trades:
+        return {
+            "сделок": 0, "gross_$": 0.0, "cost_$": 0.0,
+            "gross/сделку_$": 0.0, "costы_покрыты_%": 0.0, "доходность_%": 0.0, "монет_в_плюсе": "0/0",
+        }
+
+    gross = sum(t.gross_pnl_usdt for t in trades)
+    cost = sum(t.cost_usdt for t in trades)
+    final_equity = equity_df["equity"].iloc[-1]
+
+    by_symbol_pnl: dict[str, float] = {}
+    for t in trades:
+        by_symbol_pnl[t.symbol] = by_symbol_pnl.get(t.symbol, 0.0) + t.pnl_usdt
+    profitable = sum(1 for v in by_symbol_pnl.values() if v > 0)
+
+    return {
+        "сделок": len(trades),
+        "gross_$": round(gross, 2),
+        "cost_$": round(cost, 2),
+        "gross/сделку_$": round(gross / len(trades), 4),
+        "costы_покрыты_%": round(gross / cost * 100, 1) if cost else 0.0,
+        "доходность_%": round((final_equity / starting_equity - 1) * 100, 1),
+        "монет_в_плюсе": f"{profitable}/{len(by_symbol_pnl)}",
+    }
 
 
 def main():
     symbols = load_symbol_list()
     print(f"Монеты в портфеле ({len(symbols)}): {', '.join(symbols)}\n")
 
-    symbol_dfs = load_symbol_data(symbols)
+    raw = load_raw_data(symbols)
 
-    print("Глубина истории по каждой монете (до выравнивания):")
-    for symbol, df in symbol_dfs.items():
-        print(f"  {symbol:14s} {df['time_utc'].min()} -> {df['time_utc'].max()}")
+    common_start = common_end = None
+    rows = {}
+    for name, spec in STRATEGIES.items():
+        print(f"Прогоняю: {name}...")
+        prepared = {symbol: spec["prepare"](df) for symbol, df in raw.items()}
+        aligned, common_start, common_end = align_to_common_window(prepared)
+
+        trades, equity_df = run_portfolio_backtest(
+            aligned, risk_gate.STARTING_BALANCE_USDT, spec["entry"], spec["exit"]
+        )
+        rows[name] = summarize(trades, equity_df, risk_gate.STARTING_BALANCE_USDT)
+
+    table = pd.DataFrame(rows).T.sort_values("gross/сделку_$", ascending=False)
+
     print()
+    print("=" * 100)
+    print(f"Сравнение стратегий, {len(raw)} монет, общий период: {common_start} -> {common_end} "
+          f"(~{(common_end - common_start).days / 30:.1f} мес.)")
+    print("=" * 100)
+    print(table.to_string())
 
-    symbol_dfs = {symbol: strategies.add_ema_signals(df) for symbol, df in symbol_dfs.items()}
-    symbol_dfs = align_to_common_window(symbol_dfs)
+    out_path = Path(__file__).resolve().parent / "strategy_comparison.csv"
+    table.to_csv(out_path)
+    print(f"\nТаблица сохранена: {out_path}")
 
-    common_days = (
-        min(df["time_utc"].max() for df in symbol_dfs.values())
-        - max(df["time_utc"].min() for df in symbol_dfs.values())
-    ).days
-    if common_days < 180:
-        print("\nВНИМАНИЕ: общий период короче 6 месяцев - для честной проверки стратегии")
-        print("рекомендуется минимум 180 дней. Продолжаю с тем, что есть.")
     print()
-
-    trades, equity_df = run_portfolio_backtest(symbol_dfs, risk_gate.STARTING_BALANCE_USDT)
-
-    title = (
-        f"Результаты портфельного бэктеста EMA trend-following, {len(symbol_dfs)} монет "
-        f"({strategies.EMA_FAST}/{strategies.EMA_SLOW}, стоп {strategies.ATR_STOP_MULT}xATR{strategies.ATR_PERIOD})"
-    )
-    print_report(trades, equity_df, risk_gate.STARTING_BALANCE_USDT, title)
-
-    out_dir = Path(__file__).resolve().parent
-    save_outputs(trades, equity_df, out_dir, title, file_prefix="ema_trend_portfolio")
+    print("ВАЖНО: funding rate - ПРИБЛИЖЕНИЕ (risk_gate.ASSUMED_FUNDING_RATE_PER_8H), не измерено.")
+    print("Комиссия 0.055% (taker) - официальная ставка Bybit. Исторические новости не исключены.")
+    print()
+    print("Читать таблицу по колонке 'gross/сделку_$' - это сырой edge ДО costов, показывает,")
+    print("есть ли у идеи вообще смысл, а не только итоговую доходность (которая зависит от числа сделок).")
 
 
 if __name__ == "__main__":

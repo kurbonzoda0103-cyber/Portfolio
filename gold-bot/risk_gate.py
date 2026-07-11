@@ -104,6 +104,9 @@ def compute_position_size(
     if stop_price is None:
         raise OrderRejected("Стоп-лосс обязателен - ордер без стопа не отправляется.")
 
+    if entry_price <= 0:
+        raise OrderRejected(f"Цена входа некорректна ({entry_price}) - реальная цена не может быть <= 0.")
+
     stop_distance = abs(entry_price - stop_price)
     if stop_distance <= 0:
         raise OrderRejected("Стоп-лосс совпадает с ценой входа или некорректен.")
