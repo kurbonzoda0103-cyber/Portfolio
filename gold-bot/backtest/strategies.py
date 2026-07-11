@@ -343,3 +343,103 @@ def add_h1_adx_filtered_bollinger_signals(
     df: pd.DataFrame, period: int = BB_PERIOD, std_mult: float = BB_STD_MULT
 ) -> pd.DataFrame:
     return add_adx_filtered_bollinger_signals(resample_to_h1(df), period=period, std_mult=std_mult)
+
+
+# ---------------------------------------------------------------------------
+# 10. RSI-дивергенция - принципиально другой источник сигнала: не сама цена
+#     (как у Боллинджера/Дончиана/EMA), а РАСХОЖДЕНИЕ цены и осциллятора RSI.
+#     Классическая дивергенция ищется по свинг-точкам (локальным экстремумам) -
+#     здесь упрощение: сравниваем текущий бар с минимумом/максимумом ЦЕНЫ и
+#     RSI за одно и то же скользящее окно, без явного поиска свингов. Это
+#     приближение к полноценной дивергенции, а не она сама - как и упрощение
+#     базисного риска в funding_carry.py, явно проговариваем допущение.
+#     Пример: цена обновляет N-баровый минимум, а RSI - НЕТ (остаётся выше
+#     своего минимума за то же окно) - значит падение теряет импульс, ставим
+#     на разворот вверх. RSI-фильтр перепроданности/перекупленности (<40/>60)
+#     отсекает дивергенции на нейтральном рынке, где сигнал обычно шумовой.
+# ---------------------------------------------------------------------------
+RSI_PERIOD = 14
+RSI_DIVERGENCE_WINDOW = 14
+RSI_OVERSOLD = 40
+RSI_OVERBOUGHT = 60
+RSI_ATR_STOP_MULT = 2.0
+
+
+def _rsi(df: pd.DataFrame, period: int = RSI_PERIOD) -> pd.Series:
+    delta = df["close"].diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(alpha=1 / period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1 / period, adjust=False).mean().replace(0, pd.NA)
+    rs = avg_gain / avg_loss
+    return 100 - 100 / (1 + rs)
+
+
+def add_rsi_divergence_signals(
+    df: pd.DataFrame, window: int = RSI_DIVERGENCE_WINDOW, atr_period: int = ATR_PERIOD
+) -> pd.DataFrame:
+    df = df.copy()
+    df["rsi"] = _rsi(df)
+    df["atr"] = _atr(df, atr_period)
+
+    roll_low = df["low"].rolling(window).min()
+    roll_high = df["high"].rolling(window).max()
+    roll_rsi_low = df["rsi"].rolling(window).min()
+    roll_rsi_high = df["rsi"].rolling(window).max()
+
+    bullish_div = (df["low"] <= roll_low) & (df["rsi"] > roll_rsi_low) & (df["rsi"] < RSI_OVERSOLD)
+    bearish_div = (df["high"] >= roll_high) & (df["rsi"] < roll_rsi_high) & (df["rsi"] > RSI_OVERBOUGHT)
+
+    df["rsi_divergence"] = 0
+    df.loc[bullish_div, "rsi_divergence"] = 1
+    df.loc[bearish_div, "rsi_divergence"] = -1
+    return df
+
+
+def rsi_divergence_entry_signal(bar: pd.Series) -> Signal | None:
+    if pd.isna(bar.get("atr")) or bar["atr"] <= 0:
+        return None
+    if bar["rsi_divergence"] == 1:
+        entry = bar["close"]
+        return Signal("long", entry, entry - RSI_ATR_STOP_MULT * bar["atr"])
+    if bar["rsi_divergence"] == -1:
+        entry = bar["close"]
+        return Signal("short", entry, entry + RSI_ATR_STOP_MULT * bar["atr"])
+    return None
+
+
+def rsi_divergence_should_exit(bar: pd.Series, direction: str) -> bool:
+    """Выход, когда RSI возвращается через середину (50) - импульс, вызвавший дивергенцию, исчерпан."""
+    if pd.isna(bar.get("rsi")):
+        return False
+    return bar["rsi"] >= 50 if direction == "long" else bar["rsi"] <= 50
+
+
+# ---------------------------------------------------------------------------
+# 11. Объёмный breakout - тот же пробой канала, что и у Дончиана (идея 3), но
+#     с фильтром по объёму: входим только если пробой сопровождается
+#     АНОМАЛЬНЫМ всплеском объёма (реальный интерес рынка), а не просто ценой,
+#     случайно задевшей N-баровый экстремум. Именно это отличает её от
+#     Дончиана, а не другой period/ATR-множитель.
+# ---------------------------------------------------------------------------
+VOLUME_SPIKE_WINDOW = 20
+VOLUME_SPIKE_MULT = 2.0  # объём должен быть минимум в 2 раза выше своей скользящей средней
+
+
+def add_volume_breakout_signals(
+    df: pd.DataFrame,
+    period: int = DONCHIAN_PERIOD,
+    atr_period: int = ATR_PERIOD,
+    vol_window: int = VOLUME_SPIKE_WINDOW,
+) -> pd.DataFrame:
+    df = add_donchian_signals(df, period=period, atr_period=atr_period)
+    df["volume_avg"] = df["volume"].rolling(vol_window).mean()
+    return df
+
+
+def volume_breakout_entry_signal(bar: pd.Series) -> Signal | None:
+    if pd.isna(bar.get("volume_avg")) or bar["volume_avg"] <= 0:
+        return None
+    if bar["volume"] < VOLUME_SPIKE_MULT * bar["volume_avg"]:
+        return None
+    return donchian_entry_signal(bar)

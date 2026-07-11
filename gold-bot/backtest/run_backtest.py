@@ -168,6 +168,20 @@ STRATEGIES = {
         "entry": strategies.adx_filtered_bollinger_entry_signal,
         "exit": strategies.bollinger_partial_should_exit,
     },
+    "RSI-дивергенция": {
+        # Принципиально новая идея (не вариация Боллинджера/EMA) - сигнал от
+        # расхождения цены и осциллятора RSI, а не от самой цены.
+        "prepare": strategies.add_rsi_divergence_signals,
+        "entry": strategies.rsi_divergence_entry_signal,
+        "exit": strategies.rsi_divergence_should_exit,
+    },
+    "Объёмный breakout": {
+        # Тоже новая идея - пробой канала (как Дончиан), но подтверждённый
+        # аномальным всплеском объёма, а не только ценой.
+        "prepare": strategies.add_volume_breakout_signals,
+        "entry": strategies.volume_breakout_entry_signal,
+        "exit": strategies.donchian_should_exit,
+    },
 }
 
 
