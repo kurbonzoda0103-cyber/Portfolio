@@ -72,33 +72,38 @@ def main():
             strategies.adx_filtered_bollinger_entry_signal,
             strategies.bollinger_should_exit,
             risk_gate.compute_costs_usdt,
+            None,
         ),
         (
             "maker на вход + taker на выход",
             strategies.adx_filtered_bollinger_entry_signal,
             strategies.bollinger_should_exit,
             risk_gate.compute_costs_usdt_maker_entry,
+            None,
         ),
         (
             "maker на вход + maker на сигнальный выход (стоп - taker)",
             strategies.adx_filtered_bollinger_entry_signal,
             strategies.bollinger_should_exit,
             risk_gate.compute_costs_usdt_maker_entry_and_exit,
+            None,
         ),
         (
-            "то же + буфер проскальзывания (не первые в очереди на уровне)",
+            "то же + буфер проскальзывания (исполнение ПО ЦЕНЕ ОРДЕРА, не по close)",
             strategies.adx_filtered_bollinger_entry_signal_buffered,
             strategies.bollinger_should_exit_buffered,
             risk_gate.compute_costs_usdt_maker_entry_and_exit,
+            strategies.bollinger_signal_exit_price,
         ),
     ]
-    for label, entry_fn, exit_fn, cost_fn in scenarios:
+    for label, entry_fn, exit_fn, cost_fn, signal_exit_price_fn in scenarios:
         trades, equity_df = run_portfolio_backtest(
             aligned,
             risk_gate.STARTING_BALANCE_USDT,
             entry_fn,
             exit_fn,
             cost_fn=cost_fn,
+            signal_exit_price_fn=signal_exit_price_fn,
         )
         rows[label] = summarize(trades, equity_df, risk_gate.STARTING_BALANCE_USDT)
 
@@ -107,7 +112,7 @@ def main():
 
     taker_cost = rows["taker (эталон, как в run_backtest.py)"]["costы_покрыты_%"]
     optimistic_cost = rows["maker на вход + maker на сигнальный выход (стоп - taker)"]["costы_покрыты_%"]
-    buffered_label = "то же + буфер проскальзывания (не первые в очереди на уровне)"
+    buffered_label = "то же + буфер проскальзывания (исполнение ПО ЦЕНЕ ОРДЕРА, не по close)"
     buffered_cost = rows[buffered_label]["costы_покрыты_%"]
 
     print()

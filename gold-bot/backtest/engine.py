@@ -76,6 +76,7 @@ def run_portfolio_backtest(
     entry_signal_fn,
     should_exit_fn,
     cost_fn=risk_gate.compute_costs_usdt,
+    signal_exit_price_fn=None,
 ):
     """symbol_dfs: {symbol: df}, каждый df уже должен содержать все колонки,
     нужные entry_signal_fn/should_exit_fn (см. strategies.py - там разные
@@ -89,6 +90,12 @@ def run_portfolio_backtest(
         risk_gate.compute_costs_usdt; параметр существует, чтобы можно было
         подставить другую модель costов (см. compare_maker_fee.py) БЕЗ
         изменения основного честного сравнения стратегий в run_backtest.py.
+    signal_exit_price_fn(bar) -> float, опционально - цена исполнения ТОЛЬКО
+        для выхода по сигналу (не по стопу). По умолчанию None - цена
+        закрытия бара (как всегда было). Нужно для гипотезы лимитного
+        тейк-профита (compare_maker_fee.py) - исполнение по цене САМОГО
+        ордера (например, bb_mid), а не по случайно ушедшей дальше цене
+        закрытия - иначе буфер-подтверждение искажает саму цену сделки.
 
     Движок не привязан к конкретной стратегии - разные идеи (EMA-тренд,
     пробой диапазона, mean-reversion, ADX-фильтр) передаются как обычные
@@ -123,7 +130,12 @@ def run_portfolio_backtest(
             exit_by_signal = should_exit_fn(bar, position["direction"])
 
             if hit_stop or exit_by_signal:
-                exit_price = position["stop_price"] if hit_stop else bar["close"]
+                if hit_stop:
+                    exit_price = position["stop_price"]
+                elif signal_exit_price_fn is not None:
+                    exit_price = signal_exit_price_fn(bar)
+                else:
+                    exit_price = bar["close"]
                 exit_reason = "stop" if hit_stop else "signal_exit"
 
                 funding_periods = count_funding_periods(position["entry_time"], bar["time_utc"])

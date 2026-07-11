@@ -295,15 +295,20 @@ LIMIT_FILL_BUFFER_PCT = 0.03 / 100
 
 
 def adx_filtered_bollinger_entry_signal_buffered(bar: pd.Series) -> Signal | None:
+    """Буфер - только подтверждение, что ордер реально пересекли (см. комментарий
+    выше). Цена исполнения - ЦЕНА ЛИМИТНОГО ОРДЕРА (bb_lower/bb_upper), а НЕ
+    текущая цена закрытия - лимитный ордер не может исполниться хуже своей
+    цены, буфер не должен "улучшать" или "ухудшать" саму цену сделки, только
+    решать, доверяем ли мы, что она вообще была исполнена в этом баре."""
     if pd.isna(bar.get("adx")) or bar["adx"] > ADX_RANGING_THRESHOLD:
         return None
     if pd.isna(bar["bb_lower"]) or pd.isna(bar["atr"]) or bar["atr"] <= 0:
         return None
     if bar["close"] < bar["bb_lower"] * (1 - LIMIT_FILL_BUFFER_PCT):
-        entry = bar["close"]
+        entry = bar["bb_lower"]
         return Signal("long", entry, entry - BB_ATR_STOP_MULT * bar["atr"])
     if bar["close"] > bar["bb_upper"] * (1 + LIMIT_FILL_BUFFER_PCT):
-        entry = bar["close"]
+        entry = bar["bb_upper"]
         return Signal("short", entry, entry + BB_ATR_STOP_MULT * bar["atr"])
     return None
 
@@ -314,6 +319,13 @@ def bollinger_should_exit_buffered(bar: pd.Series, direction: str) -> bool:
     if direction == "long":
         return bar["close"] >= bar["bb_mid"] * (1 + LIMIT_FILL_BUFFER_PCT)
     return bar["close"] <= bar["bb_mid"] * (1 - LIMIT_FILL_BUFFER_PCT)
+
+
+def bollinger_signal_exit_price(bar: pd.Series) -> float:
+    """Цена исполнения лимитного тейк-профита при сигнальном выходе - сама
+    средняя линия (bb_mid), а не текущая цена закрытия (см. комментарий у
+    adx_filtered_bollinger_entry_signal_buffered - тот же принцип для выхода)."""
+    return bar["bb_mid"]
 
 
 # ---------------------------------------------------------------------------
