@@ -75,6 +75,7 @@ def run_portfolio_backtest(
     starting_equity: float,
     entry_signal_fn,
     should_exit_fn,
+    cost_fn=risk_gate.compute_costs_usdt,
 ):
     """symbol_dfs: {symbol: df}, каждый df уже должен содержать все колонки,
     нужные entry_signal_fn/should_exit_fn (см. strategies.py - там разные
@@ -83,6 +84,11 @@ def run_portfolio_backtest(
 
     entry_signal_fn(bar) -> Signal | None
     should_exit_fn(bar, direction) -> bool
+    cost_fn(qty, entry_price, exit_price, funding_periods_held) -> dict с
+        ключом total_cost_usdt - по умолчанию честная taker-модель
+        risk_gate.compute_costs_usdt; параметр существует, чтобы можно было
+        подставить другую модель costов (см. compare_maker_fee.py) БЕЗ
+        изменения основного честного сравнения стратегий в run_backtest.py.
 
     Движок не привязан к конкретной стратегии - разные идеи (EMA-тренд,
     пробой диапазона, mean-reversion, ADX-фильтр) передаются как обычные
@@ -123,7 +129,7 @@ def run_portfolio_backtest(
                 funding_periods = count_funding_periods(position["entry_time"], bar["time_utc"])
                 direction_sign = 1 if position["direction"] == "long" else -1
                 gross_pnl = (exit_price - position["entry_price"]) * direction_sign * position["qty"]
-                costs = risk_gate.compute_costs_usdt(
+                costs = cost_fn(
                     position["qty"], position["entry_price"], exit_price, funding_periods
                 )
                 pnl = gross_pnl - costs["total_cost_usdt"]

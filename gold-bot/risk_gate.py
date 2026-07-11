@@ -35,6 +35,13 @@ MAX_NEW_POSITIONS_PER_DAY = 2
 
 TAKER_FEE_PCT = 0.055 / 100       # комиссия taker (вход и выход - оба маркет-ордера в бэктесте)
 
+# ПРИБЛИЖЕНИЕ: стандартная ставка Bybit USDT-перпетуал для НЕ-VIP аккаунта
+# (не измерено на реальном счету Али - зависит от объёма/уровня аккаунта).
+# Используется только в отдельном эксперименте compare_maker_fee.py, а не
+# в основном движке/сравнении стратегий - ЧТОБЫ не путать честный сигнал
+# (taker-комиссия у всех стратегий одинаково) с гипотезой про исполнение.
+MAKER_FEE_PCT = 0.02 / 100
+
 # ПРИБЛИЖЕНИЕ, не измеренный факт: типичный funding rate для BTCUSDT perpetual
 # на Bybit колеблется в районе 0.01% за 8 часов, но реально плавает и может
 # быть отрицательным. Перед тем как доверять итоговым цифрам бэктеста, стоит
@@ -172,6 +179,24 @@ def compute_costs_usdt(qty: float, entry_price: float, exit_price: float, fundin
     entry_notional = qty * entry_price
     exit_notional = qty * exit_price
     fee_usdt = (entry_notional + exit_notional) * TAKER_FEE_PCT
+    funding_usdt = entry_notional * ASSUMED_FUNDING_RATE_PER_8H * funding_periods_held
+
+    return {
+        "fee_usdt": fee_usdt,
+        "funding_usdt": funding_usdt,
+        "total_cost_usdt": fee_usdt + funding_usdt,
+    }
+
+
+def compute_costs_usdt_maker_entry(qty: float, entry_price: float, exit_price: float, funding_periods_held: int) -> dict:
+    """Гипотеза для compare_maker_fee.py: ВХОД - лимитный ордер по цене полосы
+    Боллинджера, которую мы и так знаем заранее (maker-комиссия), ВЫХОД -
+    по-прежнему taker (и стоп, и возврат к средней) - консервативно, чтобы не
+    завышать результат оптимистичным предположением про обе ноги сразу."""
+
+    entry_notional = qty * entry_price
+    exit_notional = qty * exit_price
+    fee_usdt = entry_notional * MAKER_FEE_PCT + exit_notional * TAKER_FEE_PCT
     funding_usdt = entry_notional * ASSUMED_FUNDING_RATE_PER_8H * funding_periods_held
 
     return {
