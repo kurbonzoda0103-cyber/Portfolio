@@ -171,10 +171,14 @@ def validate_order(
     return qty
 
 
-def compute_costs_usdt(qty: float, entry_price: float, exit_price: float, funding_periods_held: int) -> dict:
+def compute_costs_usdt(
+    qty: float, entry_price: float, exit_price: float, funding_periods_held: int, exit_reason: str | None = None
+) -> dict:
     """Комиссия taker (вход + выход, оба маркет-ордера) + funding за время
     удержания позиции. Funding - ПРИБЛИЖЕНИЕ (см. ASSUMED_FUNDING_RATE_PER_8H
-    выше), не измеренный факт для реального счёта."""
+    выше), не измеренный факт для реального счёта. exit_reason не используется
+    здесь (всегда taker) - параметр только ради общей сигнатуры cost_fn с
+    другими вариантами модели costов ниже (см. engine.run_portfolio_backtest)."""
 
     entry_notional = qty * entry_price
     exit_notional = qty * exit_price
@@ -188,7 +192,9 @@ def compute_costs_usdt(qty: float, entry_price: float, exit_price: float, fundin
     }
 
 
-def compute_costs_usdt_maker_entry(qty: float, entry_price: float, exit_price: float, funding_periods_held: int) -> dict:
+def compute_costs_usdt_maker_entry(
+    qty: float, entry_price: float, exit_price: float, funding_periods_held: int, exit_reason: str | None = None
+) -> dict:
     """Гипотеза для compare_maker_fee.py: ВХОД - лимитный ордер по цене полосы
     Боллинджера, которую мы и так знаем заранее (maker-комиссия), ВЫХОД -
     по-прежнему taker (и стоп, и возврат к средней) - консервативно, чтобы не
@@ -197,6 +203,29 @@ def compute_costs_usdt_maker_entry(qty: float, entry_price: float, exit_price: f
     entry_notional = qty * entry_price
     exit_notional = qty * exit_price
     fee_usdt = entry_notional * MAKER_FEE_PCT + exit_notional * TAKER_FEE_PCT
+    funding_usdt = entry_notional * ASSUMED_FUNDING_RATE_PER_8H * funding_periods_held
+
+    return {
+        "fee_usdt": fee_usdt,
+        "funding_usdt": funding_usdt,
+        "total_cost_usdt": fee_usdt + funding_usdt,
+    }
+
+
+def compute_costs_usdt_maker_entry_and_exit(
+    qty: float, entry_price: float, exit_price: float, funding_periods_held: int, exit_reason: str | None = None
+) -> dict:
+    """Ещё один шаг гипотезы: ВХОД всегда maker (см. выше). ВЫХОД - maker
+    ТОЛЬКО если это сигнальный выход (возврат к bb_mid - цену тоже знаем
+    заранее, можно поставить лимитный тейк-профит), а если это СТОП - taker
+    (защитный ордер обязан гарантированно исполниться маркетом, экономить на
+    нём нельзя - иначе можно не закрыть позицию вовремя при быстром движении
+    против нас)."""
+
+    entry_notional = qty * entry_price
+    exit_notional = qty * exit_price
+    exit_fee_rate = MAKER_FEE_PCT if exit_reason == "signal_exit" else TAKER_FEE_PCT
+    fee_usdt = entry_notional * MAKER_FEE_PCT + exit_notional * exit_fee_rate
     funding_usdt = entry_notional * ASSUMED_FUNDING_RATE_PER_8H * funding_periods_held
 
     return {

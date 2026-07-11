@@ -130,7 +130,7 @@ def run_portfolio_backtest(
                 direction_sign = 1 if position["direction"] == "long" else -1
                 gross_pnl = (exit_price - position["entry_price"]) * direction_sign * position["qty"]
                 costs = cost_fn(
-                    position["qty"], position["entry_price"], exit_price, funding_periods
+                    position["qty"], position["entry_price"], exit_price, funding_periods, exit_reason=exit_reason
                 )
                 pnl = gross_pnl - costs["total_cost_usdt"]
 

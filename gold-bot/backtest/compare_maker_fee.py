@@ -69,6 +69,7 @@ def main():
     for label, cost_fn in [
         ("taker (эталон, как в run_backtest.py)", risk_gate.compute_costs_usdt),
         ("maker на вход + taker на выход", risk_gate.compute_costs_usdt_maker_entry),
+        ("maker на вход + maker на сигнальный выход (стоп - taker)", risk_gate.compute_costs_usdt_maker_entry_and_exit),
     ]:
         trades, equity_df = run_portfolio_backtest(
             aligned,
@@ -83,17 +84,18 @@ def main():
     print(table.to_string())
 
     taker_cost = rows["taker (эталон, как в run_backtest.py)"]["costы_покрыты_%"]
-    maker_cost = rows["maker на вход + taker на выход"]["costы_покрыты_%"]
+    best_label = "maker на вход + maker на сигнальный выход (стоп - taker)"
+    best_cost = rows[best_label]["costы_покрыты_%"]
 
     print()
-    if maker_cost >= 100:
-        print(f"-> С maker-входом costы_покрыты_% = {maker_cost}% - при этом допущении стратегия становится")
-        print("   прибыльной. НО: MAKER_FEE_PCT не измерен на реальном счету, а реальное исполнение лимитки")
-        print("   не гарантировано (можно не успеть на уровне при быстром движении цены) - это гипотеза,")
-        print("   а не подтверждённый результат.")
+    if best_cost >= 100:
+        print(f"-> С maker на входе и сигнальном выходе costы_покрыты_% = {best_cost}% (было {taker_cost}%) -")
+        print("   при этом допущении стратегия становится прибыльной. НО: MAKER_FEE_PCT не измерен на")
+        print("   реальном счету, а реальное исполнение лимитки не гарантировано (можно не успеть на уровне")
+        print("   при быстром движении цены) - это гипотеза, а не подтверждённый результат.")
     else:
-        print(f"-> Даже с maker-входом costы_покрыты_% = {maker_cost}% (было {taker_cost}%) - разрыв не закрыт")
-        print("   полностью только сменой исполнения. Комиссия - не единственная причина отставания.")
+        print(f"-> Даже с maker на входе и сигнальном выходе costы_покрыты_% = {best_cost}% (было {taker_cost}%) -")
+        print("   разрыв не закрыт полностью только сменой исполнения. Комиссия - не единственная причина отставания.")
 
 
 if __name__ == "__main__":
