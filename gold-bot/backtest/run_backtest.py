@@ -110,6 +110,14 @@ STRATEGIES = {
         "entry": strategies.adx_filtered_ema_entry_signal,
         "exit": strategies.ema_should_exit,
     },
+    "Mean-reversion H1 (Боллинджер)": {
+        # Модификация 2: та же идея (Боллинджер 20/2.0), но на H1 вместо M15 -
+        # реже сделки, зато каждая крупнее относительно фиксированных costов
+        # комиссии/funding. H1 получаем ресемплингом M15, докачивать не нужно.
+        "prepare": lambda df: strategies.add_bollinger_signals(strategies.resample_to_h1(df)),
+        "entry": strategies.bollinger_entry_signal,
+        "exit": strategies.bollinger_should_exit,
+    },
 }
 
 

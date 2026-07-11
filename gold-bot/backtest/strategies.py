@@ -22,6 +22,21 @@ class Signal:
     stop_price: float
 
 
+def resample_to_h1(df: pd.DataFrame) -> pd.DataFrame:
+    """Ресемплит M15-бары в H1 - для стратегий, которым нужен более крупный
+    таймфрейм (меньше сделок относительно фиксированных costов комиссии),
+    без отдельного скачивания данных с биржи."""
+
+    agg = {"open": "first", "high": "max", "low": "min", "close": "last"}
+    if "volume" in df.columns:
+        agg["volume"] = "sum"
+    if "turnover" in df.columns:
+        agg["turnover"] = "sum"
+
+    h1 = df.set_index("time_utc").resample("1h").agg(agg).dropna(subset=["close"])
+    return h1.reset_index()
+
+
 def _atr(df: pd.DataFrame, period: int) -> pd.Series:
     prev_close = df["close"].shift()
     true_range = pd.concat(
