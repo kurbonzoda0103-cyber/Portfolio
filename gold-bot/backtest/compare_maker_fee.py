@@ -66,16 +66,38 @@ def main():
     print("=" * 70)
 
     rows = {}
-    for label, cost_fn in [
-        ("taker (эталон, как в run_backtest.py)", risk_gate.compute_costs_usdt),
-        ("maker на вход + taker на выход", risk_gate.compute_costs_usdt_maker_entry),
-        ("maker на вход + maker на сигнальный выход (стоп - taker)", risk_gate.compute_costs_usdt_maker_entry_and_exit),
-    ]:
+    scenarios = [
+        (
+            "taker (эталон, как в run_backtest.py)",
+            strategies.adx_filtered_bollinger_entry_signal,
+            strategies.bollinger_should_exit,
+            risk_gate.compute_costs_usdt,
+        ),
+        (
+            "maker на вход + taker на выход",
+            strategies.adx_filtered_bollinger_entry_signal,
+            strategies.bollinger_should_exit,
+            risk_gate.compute_costs_usdt_maker_entry,
+        ),
+        (
+            "maker на вход + maker на сигнальный выход (стоп - taker)",
+            strategies.adx_filtered_bollinger_entry_signal,
+            strategies.bollinger_should_exit,
+            risk_gate.compute_costs_usdt_maker_entry_and_exit,
+        ),
+        (
+            "то же + буфер проскальзывания (не первые в очереди на уровне)",
+            strategies.adx_filtered_bollinger_entry_signal_buffered,
+            strategies.bollinger_should_exit_buffered,
+            risk_gate.compute_costs_usdt_maker_entry_and_exit,
+        ),
+    ]
+    for label, entry_fn, exit_fn, cost_fn in scenarios:
         trades, equity_df = run_portfolio_backtest(
             aligned,
             risk_gate.STARTING_BALANCE_USDT,
-            strategies.adx_filtered_bollinger_entry_signal,
-            strategies.bollinger_should_exit,
+            entry_fn,
+            exit_fn,
             cost_fn=cost_fn,
         )
         rows[label] = summarize(trades, equity_df, risk_gate.STARTING_BALANCE_USDT)
@@ -84,18 +106,24 @@ def main():
     print(table.to_string())
 
     taker_cost = rows["taker (эталон, как в run_backtest.py)"]["costы_покрыты_%"]
-    best_label = "maker на вход + maker на сигнальный выход (стоп - taker)"
-    best_cost = rows[best_label]["costы_покрыты_%"]
+    optimistic_cost = rows["maker на вход + maker на сигнальный выход (стоп - taker)"]["costы_покрыты_%"]
+    buffered_label = "то же + буфер проскальзывания (не первые в очереди на уровне)"
+    buffered_cost = rows[buffered_label]["costы_покрыты_%"]
 
     print()
-    if best_cost >= 100:
-        print(f"-> С maker на входе и сигнальном выходе costы_покрыты_% = {best_cost}% (было {taker_cost}%) -")
-        print("   при этом допущении стратегия становится прибыльной. НО: MAKER_FEE_PCT не измерен на")
-        print("   реальном счету, а реальное исполнение лимитки не гарантировано (можно не успеть на уровне")
-        print("   при быстром движении цены) - это гипотеза, а не подтверждённый результат.")
+    print(f"Оптимистичный maker-сценарий (гарантированное исполнение): {optimistic_cost}% costов покрыто.")
+    print(f"С буфером проскальзывания (более честная модель очереди): {buffered_cost}% costов покрыто.")
+    print()
+    if buffered_cost >= 100:
+        print(f"-> Даже с более пессимистичным допущением про исполнение (буфер {strategies.LIMIT_FILL_BUFFER_PCT*100:.2f}%)")
+        print(f"   результат остаётся прибыльным ({buffered_cost}%, было {taker_cost}% на taker) - устойчивее, чем")
+        print("   казалось по оптимистичному сценарию. Но MAKER_FEE_PCT и глубина реальной очереди на уровне")
+        print("   всё ещё не измерены на вашем счету - перед реальными деньгами стоит свериться с фактом.")
     else:
-        print(f"-> Даже с maker на входе и сигнальном выходе costы_покрыты_% = {best_cost}% (было {taker_cost}%) -")
-        print("   разрыв не закрыт полностью только сменой исполнения. Комиссия - не единственная причина отставания.")
+        print(f"-> С более пессимистичным допущением про исполнение результат падает ниже 100%")
+        print(f"   ({buffered_cost}%, было {optimistic_cost}% в оптимистичном сценарии) - оптимистичная maker-модель")
+        print("   переоценивала устойчивость edge. Разница показывает, насколько результат чувствителен")
+        print("   к качеству реального исполнения, а не только к ставке комиссии.")
 
 
 if __name__ == "__main__":

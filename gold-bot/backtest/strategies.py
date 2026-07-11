@@ -283,6 +283,40 @@ def adx_filtered_bollinger_entry_signal(bar: pd.Series) -> Signal | None:
 
 
 # ---------------------------------------------------------------------------
+# Буфер проскальзывания для гипотезы maker-исполнения (compare_maker_fee.py):
+# лимитный ордер на уровне полосы не гарантированно исполняется от первого
+# касания - в очереди могли стоять чужие заявки раньше нас. Консервативно
+# требуем, чтобы цена прошла НЕМНОГО ДАЛЬШЕ уровня (закрытие бара, а не
+# внутрибарное касание - та же огрубление, что и у остальных стратегий),
+# прежде чем считать ордер исполненным - иначе сделка в этом баре просто не
+# засчитывается (не хуже цена, а МЕНЬШЕ сделок и задержка входа/выхода).
+# ---------------------------------------------------------------------------
+LIMIT_FILL_BUFFER_PCT = 0.03 / 100
+
+
+def adx_filtered_bollinger_entry_signal_buffered(bar: pd.Series) -> Signal | None:
+    if pd.isna(bar.get("adx")) or bar["adx"] > ADX_RANGING_THRESHOLD:
+        return None
+    if pd.isna(bar["bb_lower"]) or pd.isna(bar["atr"]) or bar["atr"] <= 0:
+        return None
+    if bar["close"] < bar["bb_lower"] * (1 - LIMIT_FILL_BUFFER_PCT):
+        entry = bar["close"]
+        return Signal("long", entry, entry - BB_ATR_STOP_MULT * bar["atr"])
+    if bar["close"] > bar["bb_upper"] * (1 + LIMIT_FILL_BUFFER_PCT):
+        entry = bar["close"]
+        return Signal("short", entry, entry + BB_ATR_STOP_MULT * bar["atr"])
+    return None
+
+
+def bollinger_should_exit_buffered(bar: pd.Series, direction: str) -> bool:
+    if pd.isna(bar["bb_mid"]):
+        return False
+    if direction == "long":
+        return bar["close"] >= bar["bb_mid"] * (1 + LIMIT_FILL_BUFFER_PCT)
+    return bar["close"] <= bar["bb_mid"] * (1 - LIMIT_FILL_BUFFER_PCT)
+
+
+# ---------------------------------------------------------------------------
 # 7. То же самое (Боллинджер + ADX ranging), плюс фильтр волатильности: не
 #    входим, если полосы УЖЕ УЖЕ своей обычной ширины для этой же монеты за
 #    последнее время. Идея: комиссия+funding - это фиксированный % от notional,
