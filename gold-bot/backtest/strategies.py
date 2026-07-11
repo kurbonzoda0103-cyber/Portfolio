@@ -370,7 +370,7 @@ def _rsi(df: pd.DataFrame, period: int = RSI_PERIOD) -> pd.Series:
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
     avg_gain = gain.ewm(alpha=1 / period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1 / period, adjust=False).mean().replace(0, pd.NA)
+    avg_loss = loss.ewm(alpha=1 / period, adjust=False).mean().replace(0, float("nan"))
     rs = avg_gain / avg_loss
     return 100 - 100 / (1 + rs)
 
