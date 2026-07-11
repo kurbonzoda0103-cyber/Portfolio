@@ -156,6 +156,17 @@ def summarize(trades, equity_df, starting_equity: float) -> dict:
     }
 
 
+def print_symbol_breakdown(name: str, trades):
+    print()
+    print(f"Разбивка по монетам для лучшей стратегии ({name}), отсортировано по P&L:")
+    by_symbol = pd.DataFrame(
+        {"symbol": [t.symbol for t in trades], "pnl": [t.pnl_usdt for t in trades]}
+    ).groupby("symbol")["pnl"].agg(["sum", "count"]).sort_values("sum", ascending=False)
+    for symbol, row in by_symbol.iterrows():
+        mark = "+" if row["sum"] > 0 else " "
+        print(f"  {mark} {symbol:12s}  P&L ${row['sum']:+8.2f}   сделок: {int(row['count'])}")
+
+
 def main():
     symbols = load_symbol_list()
     print(f"Монеты в портфеле ({len(symbols)}): {', '.join(symbols)}\n")
@@ -164,6 +175,7 @@ def main():
 
     common_start = common_end = None
     rows = {}
+    trades_by_strategy = {}
     for name, spec in STRATEGIES.items():
         print(f"Прогоняю: {name}...")
         prepared = {symbol: spec["prepare"](df) for symbol, df in raw.items()}
@@ -173,6 +185,7 @@ def main():
             aligned, risk_gate.STARTING_BALANCE_USDT, spec["entry"], spec["exit"]
         )
         rows[name] = summarize(trades, equity_df, risk_gate.STARTING_BALANCE_USDT)
+        trades_by_strategy[name] = trades
 
     table = pd.DataFrame(rows).T.sort_values("gross/сделку_$", ascending=False)
 
@@ -182,6 +195,10 @@ def main():
           f"(~{(common_end - common_start).days / 30:.1f} мес.)")
     print("=" * 100)
     print(table.to_string())
+
+    best_name = table.index[0]
+    if trades_by_strategy[best_name]:
+        print_symbol_breakdown(best_name, trades_by_strategy[best_name])
 
     out_path = Path(__file__).resolve().parent / "strategy_comparison.csv"
     table.to_csv(out_path)
