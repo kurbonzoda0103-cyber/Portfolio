@@ -17,6 +17,13 @@
 
 Честно печатает результат по каждой стратегии, включая отрицательный -
 подгонять параметры под красивую кривую доходности не будем.
+
+По умолчанию прогоняет ВСЕ стратегии из STRATEGIES (для полного сравнения).
+Чтобы не гонять уже отклонённые варианты заново при проверке новой идеи,
+можно передать имена нужных стратегий аргументами (в кавычках, точное
+совпадение с ключом STRATEGIES) - тогда посчитаются только они плюс
+подтверждённая лучшая база (для сравнения новой идеи с текущим эталоном):
+    python backtest\\run_backtest.py "RSI-дивергенция" "Объёмный breakout"
 """
 
 import sys
@@ -30,6 +37,30 @@ import config
 import risk_gate
 from backtest.engine import run_portfolio_backtest
 from backtest import strategies
+
+
+BASELINE_NAME = "Mean-reversion + ADX ranging (Боллинджер)"  # текущий лучший подтверждённый вариант - всегда считаем его для сравнения
+
+
+def select_strategies(requested: list[str]) -> dict:
+    """Без аргументов - все стратегии (полное сравнение). С аргументами -
+    только запрошенные + BASELINE_NAME (чтобы видеть, лучше новая идея эталона или нет)."""
+
+    if not requested:
+        return STRATEGIES
+
+    unknown = [name for name in requested if name not in STRATEGIES]
+    if unknown:
+        print("Не найдены такие стратегии (проверьте точное написание ключа):")
+        for name in unknown:
+            print(f"  - {name}")
+        print("\nДоступные стратегии:")
+        for name in STRATEGIES:
+            print(f"  - {name}")
+        sys.exit(1)
+
+    names = list(dict.fromkeys(requested + [BASELINE_NAME]))  # без дублей, сохраняя порядок
+    return {name: STRATEGIES[name] for name in names}
 
 
 def load_symbol_list() -> list[str]:
@@ -224,6 +255,11 @@ def print_symbol_breakdown(name: str, trades):
 
 
 def main():
+    strategies_to_run = select_strategies(sys.argv[1:])
+    if len(strategies_to_run) < len(STRATEGIES):
+        print(f"Считаю только выбранные стратегии ({len(strategies_to_run)} из {len(STRATEGIES)}): "
+              f"{', '.join(strategies_to_run)}\n")
+
     symbols = load_symbol_list()
     print(f"Монеты в портфеле ({len(symbols)}): {', '.join(symbols)}\n")
 
@@ -232,7 +268,7 @@ def main():
     common_start = common_end = None
     rows = {}
     trades_by_strategy = {}
-    for name, spec in STRATEGIES.items():
+    for name, spec in strategies_to_run.items():
         print(f"Прогоняю: {name}...")
         prepared = {symbol: spec["prepare"](df) for symbol, df in raw.items()}
         aligned, common_start, common_end = align_to_common_window(prepared)
