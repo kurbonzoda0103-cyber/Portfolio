@@ -121,8 +121,18 @@ STRATEGIES = {
     "Mean-reversion + ADX ranging (Боллинджер)": {
         # Модификация 3: mean-reversion обычно работает в боковике - отсекаем
         # сильный тренд (ADX > 20), а не подгоняем параметры полос (это уже
-        # пробовали, не помогло) - фильтруем именно РЕЖИМ рынка.
+        # пробовали, не помогло) - фильтруем именно РЕЖИМ рынка. Подтверждено
+        # train/test валидацией (validate_portfolio_train_test.py): edge
+        # устойчив на обеих половинах времени (~60% costов покрыто и там, и там).
         "prepare": strategies.add_adx_filtered_bollinger_signals,
+        "entry": strategies.adx_filtered_bollinger_entry_signal,
+        "exit": strategies.bollinger_should_exit,
+    },
+    "Mean-reversion + ADX ranging (полосы 30/2.5)": {
+        # Модификация 4: комбинация двух идей - широкие полосы/длинный период
+        # (провалились САМИ ПО СЕБЕ без ADX-фильтра) + подтверждённый ADX-фильтр
+        # бокового рынка. Взаимодействие может отличаться от изолированных тестов.
+        "prepare": lambda df: strategies.add_adx_filtered_bollinger_signals(df, period=30, std_mult=2.5),
         "entry": strategies.adx_filtered_bollinger_entry_signal,
         "exit": strategies.bollinger_should_exit,
     },

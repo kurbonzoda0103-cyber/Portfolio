@@ -268,8 +268,10 @@ def adx_filtered_ema_entry_signal(bar: pd.Series) -> Signal | None:
 #    Не подгонка параметров Боллинджера (это мы уже пробовали, не помогло) -
 #    отсекаем именно РЕЖИМ рынка, где сама идея разворота уместна.
 # ---------------------------------------------------------------------------
-def add_adx_filtered_bollinger_signals(df: pd.DataFrame) -> pd.DataFrame:
-    df = add_bollinger_signals(df)
+def add_adx_filtered_bollinger_signals(
+    df: pd.DataFrame, period: int = BB_PERIOD, std_mult: float = BB_STD_MULT
+) -> pd.DataFrame:
+    df = add_bollinger_signals(df, period=period, std_mult=std_mult)
     df["adx"] = _adx(df)
     return df
 
