@@ -96,6 +96,15 @@ STRATEGIES = {
         "entry": strategies.bollinger_entry_signal,
         "exit": strategies.bollinger_should_exit,
     },
+    "Mean-reversion (модификация: полосы 30/2.5)": {
+        # Модификация 1: реже, но качественнее вход - длиннее период (30 вместо
+        # 20) и шире полосы (2.5 std вместо 2.0). Base-вариант выше показал
+        # реальный положительный edge, но слишком частые сделки - costы съедали
+        # его вдвое. Проверяем, вырастет ли edge на сделку при более строгом входе.
+        "prepare": lambda df: strategies.add_bollinger_signals(df, period=30, std_mult=2.5),
+        "entry": strategies.bollinger_entry_signal,
+        "exit": strategies.bollinger_should_exit,
+    },
     "EMA + фильтр ADX": {
         "prepare": strategies.add_adx_filtered_ema_signals,
         "entry": strategies.adx_filtered_ema_entry_signal,
