@@ -100,9 +100,17 @@ def add_h1_trend_filter(df: pd.DataFrame) -> pd.DataFrame:
     h1 = h1.reset_index()
     h1["confirmed_time"] = h1["time_utc"] + pd.Timedelta(hours=1)
 
+    # resample() иногда меняет разрешение datetime64 (мс/мкс/нс) относительно
+    # исходной колонки - merge_asof в новых версиях pandas требует ТОЧНО
+    # одинаковый dtype у обоих ключей, поэтому приводим оба явно к [ns].
+    left_keys = df[["time_utc"]].sort_values("time_utc").copy()
+    left_keys["time_utc"] = left_keys["time_utc"].astype("datetime64[ns]")
+    right_keys = h1[["confirmed_time", "close", "ema"]].sort_values("confirmed_time").copy()
+    right_keys["confirmed_time"] = right_keys["confirmed_time"].astype("datetime64[ns]")
+
     merged = pd.merge_asof(
-        df[["time_utc"]].sort_values("time_utc"),
-        h1[["confirmed_time", "close", "ema"]].sort_values("confirmed_time"),
+        left_keys,
+        right_keys,
         left_on="time_utc",
         right_on="confirmed_time",
         direction="backward",
