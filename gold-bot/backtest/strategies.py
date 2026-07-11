@@ -280,3 +280,32 @@ def adx_filtered_bollinger_entry_signal(bar: pd.Series) -> Signal | None:
     if pd.isna(bar.get("adx")) or bar["adx"] > ADX_RANGING_THRESHOLD:
         return None
     return bollinger_entry_signal(bar)
+
+
+# ---------------------------------------------------------------------------
+# 7. То же самое (Боллинджер + ADX ranging), плюс фильтр волатильности: не
+#    входим, если полосы УЖЕ УЖЕ своей обычной ширины для этой же монеты за
+#    последнее время. Идея: комиссия+funding - это фиксированный % от notional,
+#    а ожидаемый ход цены при mean-reversion примерно пропорционален ширине
+#    полосы - значит на аномально узких полосах costы съедают edge сильнее
+#    всего. Порог - НЕ константа (не подгоняем число под конкретную монету),
+#    а скользящая медиана ширины полосы самой этой монеты - самонормирующийся
+#    фильтр, одинаково работающий и на BTC, и на дешёвых альтах.
+# ---------------------------------------------------------------------------
+BB_WIDTH_MEDIAN_WINDOW = 200  # ~2 дня на M15 - достаточно баров для устойчивой медианы, не так много, чтобы съесть всю историю на прогрев
+
+
+def add_adx_filtered_bollinger_vol_signals(
+    df: pd.DataFrame, period: int = BB_PERIOD, std_mult: float = BB_STD_MULT
+) -> pd.DataFrame:
+    df = add_adx_filtered_bollinger_signals(df, period=period, std_mult=std_mult)
+    bb_width_pct = (df["bb_upper"] - df["bb_lower"]) / df["bb_mid"]
+    df["bb_width_pct"] = bb_width_pct
+    df["bb_width_median"] = bb_width_pct.rolling(BB_WIDTH_MEDIAN_WINDOW).median()
+    return df
+
+
+def adx_vol_filtered_bollinger_entry_signal(bar: pd.Series) -> Signal | None:
+    if pd.isna(bar.get("bb_width_median")) or bar["bb_width_pct"] <= bar["bb_width_median"]:
+        return None
+    return adx_filtered_bollinger_entry_signal(bar)

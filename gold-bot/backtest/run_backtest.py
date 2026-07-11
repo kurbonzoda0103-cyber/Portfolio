@@ -136,6 +136,14 @@ STRATEGIES = {
         "entry": strategies.adx_filtered_bollinger_entry_signal,
         "exit": strategies.bollinger_should_exit,
     },
+    "Mean-reversion + ADX ranging + фильтр волатильности": {
+        # Модификация 5: НЕ меняем параметры полос (20/2.0, подтверждённый
+        # train/test вариант) - вместо этого режем costы через отказ от входов
+        # на аномально узких полосах (маленький ожидаемый ход при том же % costе).
+        "prepare": strategies.add_adx_filtered_bollinger_vol_signals,
+        "entry": strategies.adx_vol_filtered_bollinger_entry_signal,
+        "exit": strategies.bollinger_should_exit,
+    },
 }
 
 
